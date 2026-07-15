@@ -3,13 +3,13 @@ import json
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from database import save_token, get_token
 
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/drive.metadata.readonly"
 ]
-TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tokens.json")
 CREDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.json")
 
 def get_auth_url():
@@ -29,18 +29,17 @@ def get_auth_url():
 def exchange_code(flow, code):
     flow.fetch_token(code=code.strip())
     creds = flow.credentials
-    with open(TOKEN_FILE, "w") as f:
-        f.write(creds.to_json())
+    save_token(0, creds.to_json())
     return creds
 
 def get_credentials():
-    if not os.path.exists(TOKEN_FILE):
+    token_data = get_token(0)
+    if not token_data:
         return None
-    creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+    creds = Credentials.from_authorized_user_info(json.loads(token_data), SCOPES)
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        with open(TOKEN_FILE, "w") as f:
-            f.write(creds.to_json())
+        save_token(0, creds.to_json())
     return creds if creds and creds.valid else None
 
 def is_authenticated():

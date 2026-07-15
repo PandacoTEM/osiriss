@@ -1,7 +1,7 @@
 import os
 import threading
 from flask import Flask, request, render_template_string, redirect
-from database import get_all_active, get_reminders, deactivate_by_id, update_datetime, get_task_lists, get_list_items, toggle_task_item, search_lists, delete_task_item
+from database import get_all_active, get_reminders, deactivate_by_id, update_datetime, get_task_lists, get_list_items, toggle_task_item, search_lists, delete_task_item, get_conn, DATABASE_URL
 
 app = Flask(__name__)
 PASSWORD = os.getenv("DASHBOARD_PASSWORD", "osiris123")
@@ -169,9 +169,7 @@ def index():
     f = request.args.get("filter", "all")
     pwd = request.args.get("pwd") or request.form.get("pwd")
     if tab == "tasks":
-        from database import DB_PATH
-        import sqlite3
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         c = conn.cursor()
         c.execute("SELECT DISTINCT user_id FROM task_lists")
         user_ids = [r[0] for r in c.fetchall()]
@@ -185,9 +183,7 @@ def index():
                 done = sum(1 for i in items if i[2])
                 task_lists.append({"name": lname, "items": items_data, "done": done, "total": len(items)})
         return render_template_string(HTML, tab=tab, task_lists=task_lists, pwd=pwd or PASSWORD)
-    import sqlite3
-    from database import DB_PATH
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT id, user_id, text, datetime, recurring, active FROM reminders ORDER BY datetime DESC LIMIT 100")
     rows = [dict(id=r[0], user_id=r[1], text=r[2], datetime=r[3], recurring=r[4], active=r[5]) for r in c.fetchall()]
@@ -218,11 +214,9 @@ def task_delete(item_id):
 def edit(rid):
     if not check_auth():
         return "Acceso denegado", 401
-    from database import DB_PATH
-    import sqlite3
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT id, text, datetime, recurring FROM reminders WHERE id=?", (rid,))
+    c.execute("SELECT id, text, datetime, recurring FROM reminders WHERE id=%s" if DATABASE_URL else "SELECT id, text, datetime, recurring FROM reminders WHERE id=?", (rid,))
     row = c.fetchone()
     conn.close()
     if not row:
@@ -232,9 +226,9 @@ def edit(rid):
         text = request.form["text"]
         dt = request.form["datetime"]
         recurring = request.form.get("recurring") or None
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         c = conn.cursor()
-        c.execute("UPDATE reminders SET text=?, datetime=?, recurring=? WHERE id=?", (text, dt, recurring, rid))
+        c.execute("UPDATE reminders SET text=%s, datetime=%s, recurring=%s WHERE id=%s" if DATABASE_URL else "UPDATE reminders SET text=?, datetime=?, recurring=? WHERE id=?", (text, dt, recurring, rid))
         conn.commit()
         conn.close()
         return redirect(f"/?pwd={PASSWORD}")

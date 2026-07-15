@@ -98,6 +98,10 @@ ACCIONES:
 21. RESUMEN DE GASTOS: {{"action": "expense_summary"}}
     El usuario quiere saber cuánto ha gastado hoy o en general.
     Responde pidiendo el resumen de gastos del día.
+
+22. GENERAR CÓDIGO DE AUTORIZACIÓN: {{"action": "generate_auth_code"}}
+    El creador quiere dar acceso a alguien más. Genera un código de un solo uso.
+    Responde: "Código generado: XXXX. Compartilo con tu amigo. Válido por 24 horas."
     El usuario menciona que compró algo con un monto (en colones o dólares).
     Extrae el monto numérico, una descripción corta, y asigna categoría automática:
     - "comida": supermercado, restaurante, galletas, café, etc
@@ -150,6 +154,8 @@ Ejemplos:
 - "compre medicina 5000" -> {{"action": "record_expense", "amount": 5000, "description": "medicina", "category": "salud"}}
 - "gaste 2000 en uber" -> {{"action": "record_expense", "amount": 2000, "description": "uber", "category": "transporte"}}
 - "cuanto he gastado hoy" -> {{"action": "expense_summary"}}
+- "dame una contrasela para mi amigo" -> {{"action": "generate_auth_code"}}
+- "genera un codigo de acceso" -> {{"action": "generate_auth_code"}}
 
 MÚLTIPLES ACCIONES (ejemplos):
 - "toda la semana entro a las 1, sábado libre, domingo a las 9, viernes a las 9, apunta todo" -> {{"actions": [{{"action": "create", "text": "Entrar a trabajar", "datetime": "2026-07-14 13:00", "recurring": "daily", "until": "2026-07-19", "lead_minutes": 120}}, {{"action": "create", "text": "Descanso", "datetime": "2026-07-18 00:00", "recurring": null}}, {{"action": "create", "text": "Entrar a trabajar", "datetime": "2026-07-19 09:00", "recurring": null}}, {{"action": "create", "text": "Entrar a trabajar", "datetime": "2026-07-17 09:00", "recurring": null}}]}}

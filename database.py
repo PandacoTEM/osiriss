@@ -99,6 +99,13 @@ def init_db():
                 user_id BIGINT PRIMARY KEY
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS auth_codes (
+                code TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                used INTEGER DEFAULT 0
+            )
+        """)
     else:
         c.execute("CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, text TEXT NOT NULL, datetime TEXT NOT NULL, recurring TEXT, search_query TEXT, created_at TEXT NOT NULL, active INTEGER DEFAULT 1)")
         for col in ["search_query", "friend_name", "end_date", "lead_minutes INTEGER DEFAULT 0"]:
@@ -113,6 +120,7 @@ def init_db():
         c.execute("CREATE TABLE IF NOT EXISTS task_items (id INTEGER PRIMARY KEY AUTOINCREMENT, list_id INTEGER NOT NULL, text TEXT NOT NULL, completed INTEGER DEFAULT 0, priority INTEGER DEFAULT 0, tags TEXT, created_at TEXT NOT NULL, FOREIGN KEY (list_id) REFERENCES task_lists(id))")
         c.execute("CREATE TABLE IF NOT EXISTS user_tokens (user_id INTEGER PRIMARY KEY, token_data TEXT NOT NULL)")
         c.execute("CREATE TABLE IF NOT EXISTS authorized_users (user_id INTEGER PRIMARY KEY)")
+        c.execute("CREATE TABLE IF NOT EXISTS auth_codes (code TEXT PRIMARY KEY, created_at TEXT NOT NULL, used INTEGER DEFAULT 0)")
     conn.commit()
     conn.close()
 
@@ -384,3 +392,38 @@ def is_authorized(user_id):
     row = c.fetchone()
     conn.close()
     return row is not None
+
+import secrets
+
+def create_auth_code():
+    code = secrets.token_hex(4).upper()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(f"INSERT INTO auth_codes (code, created_at, used) VALUES ({_placeholders(1)}, {_placeholders(2)}, 0)", (code, now))
+    conn.commit()
+    conn.close()
+    return code
+
+def redeem_auth_code(code, user_id):
+    code = code.upper().strip()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(f"SELECT used, created_at FROM auth_codes WHERE code = {_placeholders(1)}", (code,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return "invalido"
+    if row[0]:
+        conn.close()
+        return "usado"
+    from datetime import timedelta
+    created = datetime.strptime(row[1], "%Y-%m-%d %H:%M")
+    if datetime.now() - created > timedelta(hours=24):
+        conn.close()
+        return "expirado"
+    c.execute(f"UPDATE auth_codes SET used = 1 WHERE code = {_placeholders(1)}", (code,))
+    conn.commit()
+    conn.close()
+    authorize_user(user_id)
+    return "ok"

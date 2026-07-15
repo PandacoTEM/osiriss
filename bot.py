@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-from database import init_db, add_reminder, get_all_active, get_reminders, deactivate_by_id, deactivate_by_text, update_datetime, log_activity, get_today_activity, save_message, get_recent_history, create_task_list, add_task_item, get_task_lists, get_list_items, toggle_task_item, delete_task_list, delete_task_item, search_lists, add_expense, get_today_expenses, get_today_total, get_recent_expenses, authorize_user, deauthorize_user, is_authorized
+from database import init_db, add_reminder, get_all_active, get_reminders, deactivate_by_id, deactivate_by_text, update_datetime, log_activity, get_today_activity, save_message, get_recent_history, create_task_list, add_task_item, get_task_lists, get_list_items, toggle_task_item, delete_task_list, delete_task_item, search_lists, add_expense, get_today_expenses, get_today_total, get_recent_expenses, authorize_user, deauthorize_user, is_authorized, create_auth_code, redeem_auth_code
 from ai_handler import analyze_message, transcribe_audio, answer_question, analyze_image, ocr_image
 from web_search import search as web_search
 from music_recognizer import recognize as recognize_music
@@ -145,6 +145,19 @@ async def deauthorize(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"\U0001f5d1\ufe0f Usuario {target} desautorizado.")
     except ValueError:
         await update.message.reply_text("ID inv\u00e1lido.")
+
+async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid == CREATOR_ID or is_authorized(uid):
+        await update.message.reply_text("Ya est\u00e1s autorizado.")
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Us\u00e1: /register <c\u00f3digo>")
+        return
+    result = redeem_auth_code(args[0], uid)
+    msgs = {"ok": "\u2705 *Autorizado!* Ya pod\u00e9s usar el bot.", "invalido": "\u26d4 C\u00f3digo inv\u00e1lido.", "usado": "\U0001f512 Ese c\u00f3digo ya fue usado.", "expirado": "\u23f3 El c\u00f3digo expir\u00f3 (24h). Ped\u00ed uno nuevo al creador."}
+    await update.message.reply_text(msgs.get(result, "\u26d4 Error."), parse_mode="Markdown")
 
 def schedule_from_db(app):
     reminders = get_all_active()
@@ -624,6 +637,14 @@ async def process_action(update, context, text, result, user_id):
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
         save_exchange(user_id, text, f"Consult\u00f3 gastos del d\u00eda: {total}", action)
 
+    elif action == "generate_auth_code":
+        if user_id != CREATOR_ID:
+            await update.message.reply_text("\u26d4 Solo el creador puede generar c\u00f3digos.")
+            return
+        code = create_auth_code()
+        log_activity(user_id, "generar_codigo", code)
+        await update.message.reply_text(f"\U0001f511 *C\u00f3digo generado:* `{code}`\n\nCompartilo con tu amigo. V\u00e1lido por 24 horas.\nTu amigo debe usar: `/register {code}`", parse_mode="Markdown")
+
 async def process_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     user_id = update.effective_user.id
     history = get_recent_history(user_id, limit=6)
@@ -852,6 +873,7 @@ def main():
     app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("authorize", authorize))
     app.add_handler(CommandHandler("deauthorize", deauthorize))
+    app.add_handler(CommandHandler("register", register))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

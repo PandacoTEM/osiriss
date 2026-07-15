@@ -61,44 +61,68 @@ def smart_alarm(event_dt, lead_minutes):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     is_creator = uid == CREATOR_ID
-    greeting = "Jefe" if is_creator else "amigo"
+    authorized = is_creator or is_authorized(uid)
     chat_type = update.effective_chat.type if update.effective_chat else "private"
+    if not authorized:
+        await update.message.reply_text(
+            "\U0001f512 *Acceso denegado.* Necesit\u00e1s autorizaci\u00f3n del creador para usar este bot.\n\n"
+            "Si ten\u00e9s un c\u00f3digo de acceso, us\u00e1: /register <c\u00f3digo>",
+            parse_mode="Markdown"
+        )
+        return
     if chat_type in ("group", "supergroup"):
         await update.message.reply_text(
-            f"\U0001f9e0 *\u00a1Hola! Soy Osiris, tu asistente personal.*\n\n"
+            "\U0001f9e0 *\u00a1Hola! Soy Osiris, tu asistente personal.*\n\n"
             "Estoy aqu\u00ed para ayudarte con recordatorios, tareas, gastos y m\u00e1s.\n\n"
             "\U0001f4ac Menci\u00f3name con @Osiris_bot o di 'Osiris' seguido de tu mensaje.\n"
             "Ej: 'Osiris recu\u00e9rdame X ma\u00f1ana'",
             parse_mode="Markdown"
         )
         return
-    msg = (
-        f"\U0001f9e0 *\u00a1Hola, {greeting}! Soy Osiris.*\n\n"
-        "Soy tu asistente personal de recordatorios, apuntes, gastos y m\u00e1s. "
-        "Estoy programado para ayudarte a organizar tu d\u00eda a d\u00eda. "
-        "\u00a1Es un placer trabajar con vos!\n\n"
-        "\U0001f4ac *As\u00ed pod\u00e9s hablarme:*\n"
-        f'\u2022 "Recu\u00e9rdame llamar al dentista ma\u00f1ana a las 3pm"\n'
-        f'\u2022 "Cada lunes sacar la basura a las 8pm"\n'
-        f'\u2022 "C\u00f3mo termin\u00f3 Francia vs Espa\u00f1a?"\n'
-        f'\u2022 "Agenda cita con el dentista viernes a las 3pm"\n'
-        f'\u2022 "Compr\u00e9 galletas a 455 colones"\n'
-        f'\u2022 "Cre\u00e1 una lista de supermercado"\n'
-        f'\u2022 "Extra\u00e9 el texto de esta factura" + foto\n\n'
-        "\U0001f4a1 *Funciones principales:*\n"
-        "\u2705 Recordatorios con fecha, recurrencia y prioridad\n"
-        "\u2705 B\u00fasqueda en internet con resumen IA\n"
-        "\u2705 Reconocimiento de m\u00fasica (mand\u00e1 un audio)\n"
-        "\u2705 Visi\u00f3n en im\u00e1genes y OCR en facturas\n"
-        "\u2705 Google Calendar, YouTube y Drive con /auth\n"
-        "\u2705 Listas de tareas pendientes\n"
-        "\u2705 Registro de gastos diarios\n"
-        "\u2705 Dashboard web con /panel\n\n"
-        "\U0001f4cb *Res\u00famenes autom\u00e1ticos:*\n"
-        "\u2022 6:00 AM \u2192 Recordatorios del d\u00eda\n"
-        "\u2022 9:00 PM \u2192 Resumen de actividades y gastos\n\n"
-        + ("\u00a1Estoy listo para ayudarte, *Jefe*!" if is_creator else "\u00a1Estoy listo para ayudarte!")
-    )
+    name = update.effective_user.first_name or ""
+    if is_creator:
+        msg = (
+            "\U0001f9e0 *\u00a1Hola, Jefe! Soy Osiris.*\n\n"
+            "Soy tu asistente personal de recordatorios, apuntes, gastos y m\u00e1s. "
+            "Estoy programado para ayudarte a organizar tu d\u00eda a d\u00eda. "
+            "\u00a1Es un placer trabajar con vos!\n\n"
+            "\U0001f4ac *As\u00ed pod\u00e9s hablarme:*\n"
+            '\u2022 "Recu\u00e9rdame llamar al dentista ma\u00f1ana a las 3pm"\n'
+            '\u2022 "Cada lunes sacar la basura a las 8pm"\n'
+            '\u2022 "C\u00f3mo termin\u00f3 Francia vs Espa\u00f1a?"\n'
+            '\u2022 "Agenda cita con el dentista viernes a las 3pm"\n'
+            '\u2022 "Compr\u00e9 galletas a 455 colones"\n'
+            '\u2022 "Cre\u00e1 una lista de supermercado"\n'
+            '\u2022 "Extra\u00e9 el texto de esta factura" + foto\n\n'
+            "\U0001f4a1 *Funciones principales:*\n"
+            "\u2705 Recordatorios con fecha, recurrencia y prioridad\n"
+            "\u2705 B\u00fasqueda en internet con resumen IA\n"
+            "\u2705 Reconocimiento de m\u00fasica (mand\u00e1 un audio)\n"
+            "\u2705 Visi\u00f3n en im\u00e1genes y OCR en facturas\n"
+            "\u2705 Google Calendar, YouTube y Drive con /auth\n"
+            "\u2705 Listas de tareas pendientes\n"
+            "\u2705 Registro de gastos diarios\n"
+            "\u2705 Dashboard web con /panel\n\n"
+            "\U0001f4cb *Res\u00famenes autom\u00e1ticos:*\n"
+            "\u2022 6:00 AM \u2192 Recordatorios del d\u00eda\n"
+            "\u2022 9:00 PM \u2192 Resumen de actividades y gastos\n\n"
+            "\u00a1Estoy listo para ayudarte, *Jefe*!"
+        )
+    else:
+        msg = (
+            f"\U0001f9e0 *\u00a1Hola, {name}! Soy Osiris.*\n\n"
+            "Soy un asistente personal creado para ayudarte con tus tareas diarias. "
+            "Puedo gestionar recordatorios, apuntes, gastos y mucho m\u00e1s. "
+            "\u00a1Es un placer ayudarte!\n\n"
+            "\U0001f4ac *Algunas cosas que puedo hacer:*\n"
+            '\u2022 Recordarte fechas importantes\n'
+            '\u2022 Buscar informaci\u00f3n en internet\n'
+            '\u2022 Reconocer canciones\n'
+            '\u2022 Leer texto de im\u00e1genes\n'
+            '\u2022 Llevar control de tus gastos\n'
+            '\u2022 Crear listas de tareas\n\n'
+            "\u00a1Decime 'Osiris' seguido de lo que necesit\u00e1s y te ayudo!"
+        )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def auth(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -18,8 +18,8 @@ def _last_id(c):
 
 def _placeholders(n):
     if DATABASE_URL:
-        return ", ".join(f"%s" for _ in range(n))
-    return ", ".join("?" for _ in range(n))
+        return "%s"
+    return "?"
 
 def init_db():
     conn = get_conn()

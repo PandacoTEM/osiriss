@@ -928,7 +928,7 @@ def main():
         @flask_app.route("/webhook", methods=["POST"])
         def webhook():
             update = TgUpdate.de_json(request.get_json(force=True), ptb_app.bot)
-            ptb_app.update_queue.put_nowait(update)
+            loop.call_soon_threadsafe(ptb_app.update_queue.put_nowait, update)
             return "OK", 200
         loop.run_until_complete(ptb_app.bot.set_webhook(url="https://osiriss.onrender.com/webhook"))
         logging.info("Webhook configurado en Render")

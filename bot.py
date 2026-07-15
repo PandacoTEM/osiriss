@@ -114,14 +114,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Soy un asistente personal creado para ayudarte con tus tareas diarias. "
             "Puedo gestionar recordatorios, apuntes, gastos y mucho m\u00e1s. "
             "\u00a1Es un placer ayudarte!\n\n"
-            "\U0001f4ac *Algunas cosas que puedo hacer:*\n"
-            '\u2022 Recordarte fechas importantes\n'
-            '\u2022 Buscar informaci\u00f3n en internet\n'
-            '\u2022 Reconocer canciones\n'
-            '\u2022 Leer texto de im\u00e1genes\n'
-            '\u2022 Llevar control de tus gastos\n'
-            '\u2022 Crear listas de tareas\n\n'
-            "\u00a1Decime 'Osiris' seguido de lo que necesit\u00e1s y te ayudo!"
+            "\U0001f4ac *As\u00ed pod\u00e9s pedirme cosas:*\n"
+            '\u2022 "Osiris recu\u00e9rdame ma\u00f1ana a las 3pm comprar leche" te lo recordar\u00e9\n'
+            '\u2022 "Osiris busca el resultado del partido de anoche" y te lo busco\n'
+            '\u2022 "Osiris gast\u00e9 5000 en el super" y lo registro\n'
+            '\u2022 "Osiris cre\u00e1 una lista de pendientes" y la creo\n'
+            '\u2022 Mandame una foto diciendo "extrae el texto" y lo leo\n\n'
+            "\u00a1Solo dec\u00ed 'Osiris' seguido de lo que necesit\u00e1s y yo me encargo!"
         )
     await update.message.reply_text(msg, parse_mode="Markdown")
 

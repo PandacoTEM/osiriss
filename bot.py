@@ -916,12 +916,8 @@ def main():
     ptb_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     ptb_app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    t = threading.Thread(target=run_dashboard, daemon=True)
-    t.start()
+
     if DATABASE_URL:
-        import asyncio
-        loop.run_until_complete(ptb_app.initialize())
-        loop.run_until_complete(ptb_app.start())
         from dashboard import app as flask_app
         from flask import request
         from telegram import Update as TgUpdate
@@ -930,10 +926,16 @@ def main():
             update = TgUpdate.de_json(request.get_json(force=True), ptb_app.bot)
             loop.call_soon_threadsafe(ptb_app.update_queue.put_nowait, update)
             return "OK", 200
+        loop.run_until_complete(ptb_app.initialize())
+        loop.run_until_complete(ptb_app.start())
         loop.run_until_complete(ptb_app.bot.set_webhook(url="https://osiriss.onrender.com/webhook"))
         logging.info("Webhook configurado en Render")
+        t = threading.Thread(target=run_dashboard, daemon=True)
+        t.start()
         loop.run_forever()
     else:
+        t = threading.Thread(target=run_dashboard, daemon=True)
+        t.start()
         ptb_app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":

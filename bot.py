@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-from database import init_db, add_reminder, get_all_active, get_reminders, deactivate_by_id, deactivate_by_text, update_datetime, log_activity, get_today_activity, save_message, get_recent_history, create_task_list, add_task_item, get_task_lists, get_list_items, toggle_task_item, delete_task_list, delete_task_item, search_lists
+from database import init_db, add_reminder, get_all_active, get_reminders, deactivate_by_id, deactivate_by_text, update_datetime, log_activity, get_today_activity, save_message, get_recent_history, create_task_list, add_task_item, get_task_lists, get_list_items, toggle_task_item, delete_task_list, delete_task_item, search_lists, add_expense, get_today_expenses, get_today_total, get_recent_expenses
 from ai_handler import analyze_message, transcribe_audio, answer_question, analyze_image, ocr_image
 from web_search import search as web_search
 from music_recognizer import recognize as recognize_music
@@ -561,6 +561,31 @@ async def process_action(update, context, text, result, user_id):
         context.user_data["ocr_pending"] = True
         await update.message.reply_text("\U0001f5bc *Jefe*, env\u00edame la foto y extraigo el texto.", parse_mode="Markdown")
 
+    elif action == "record_expense":
+        amount = result.get("amount", 0)
+        description = result.get("description", "")
+        category = result.get("category")
+        add_expense(user_id, amount, description, category)
+        log_activity(user_id, "registrar_gasto", f"{description}: {amount}")
+        save_exchange(user_id, text, f"Gasto registrado: {description} {amount}", action)
+        total = get_today_total(user_id)
+        cat_icon = {"comida":"\U0001f34e","transporte":"\U0001f697","servicios":"\U0001f4a1","ocio":"\U0001f3ac","salud":"\U0001f48a","hogar":"\U0001f3e0","otros":"\U0001f4b0"}.get(category, "\U0001f4b0")
+        await update.message.reply_text(f"{cat_icon} *Jefe*, registrado: {description} \u2014 {amount} CRC\n\U0001f4ca Gastos del d\u00eda: *{total} CRC*", parse_mode="Markdown")
+
+    elif action == "expense_summary":
+        expenses = get_today_expenses(user_id)
+        total = sum(r[0] for r in expenses)
+        if not expenses:
+            await update.message.reply_text("\U0001f4b0 *Jefe*, no has gastado nada hoy.", parse_mode="Markdown")
+            return
+        lines = [f"\U0001f4ca *Gastos de hoy:*\n"]
+        for amt, desc, cat, cur in expenses:
+            icon = {"comida":"\U0001f34e","transporte":"\U0001f697","servicios":"\U0001f4a1","ocio":"\U0001f3ac","salud":"\U0001f48a","hogar":"\U0001f3e0","otros":"\U0001f4b0"}.get(cat, "\U0001f4b0")
+            lines.append(f"{icon} {desc} \u2014 {amt} {cur}")
+        lines.append(f"\n\u2795 *Total: {total} CRC*")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        save_exchange(user_id, text, f"Consult\u00f3 gastos del d\u00eda: {total}", action)
+
 async def process_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     user_id = update.effective_user.id
     history = get_recent_history(user_id, limit=6)
@@ -651,7 +676,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_ocr:
             text = ocr_image(file_path)
             log_activity(user_id, "ocr_imagen", text[:100])
-            await msg.edit_text(f"\U0001f4dd *Texto extra\u00eddo:*\n\n{text}", parse_mode="Markdown")
+            import re
+            amounts = re.findall(r'(?:total|monto|pagar|importe|neto)[:\s]*\$\s*([\d,.]+)', text, re.I)
+            if not amounts:
+                amounts = re.findall(r'(?:total|monto|pagar|importe|neto)[:\s]*([\d,.]+)', text, re.I)
+            if not amounts:
+                amounts = re.findall(r'\$\s*([\d,.]+)', text)
+            if amounts:
+                total = float(amounts[-1].replace(",", ""))
+                add_expense(user_id, total, "factura", "comida")
+                log_activity(user_id, "registrar_gasto", f"factura: {total}")
+                await msg.edit_text(f"\U0001f4dd *Texto extra\u00eddo:*\n\n{text}\n\n\U0001f4b0 *Total detectado:* {total} CRC \u2014 registrado como gasto", parse_mode="Markdown")
+            else:
+                await msg.edit_text(f"\U0001f4dd *Texto extra\u00eddo:*\n\n{text}", parse_mode="Markdown")
         elif not caption:
             desc = analyze_image(file_path, "Describe esta imagen en detalle.")
             log_activity(user_id, "vision_imagen", desc[:100])
@@ -720,6 +757,8 @@ async def evening_summary(context: ContextTypes.DEFAULT_TYPE):
         yt_count = sum(1 for r in rows if r[0] == "buscar_youtube")
         drive_count = sum(1 for r in rows if r[0] == "buscar_drive")
         delete_count = sum(1 for r in rows if r[0] == "eliminar_recordatorio")
+        expenses = get_today_expenses(uid)
+        total_spent = sum(r[0] for r in expenses)
         lines = [f"\U0001f303 *Buenas noches, Jefe!* Resumen del d\u00eda:\n"]
         if reminder_count:
             lines.append(f"\U0001f514 {reminder_count} recordatorio(s)")
@@ -735,6 +774,8 @@ async def evening_summary(context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"\U0001f4c1 {drive_count} b\u00fasqueda(s) en Drive")
         if delete_count:
             lines.append(f"\U0001f5d1\ufe0f {delete_count} eliminaci\u00f3n(es)")
+        if expenses:
+            lines.append(f"\U0001f4b0 Gastos: *{total_spent} CRC* ({len(expenses)} compras)")
         lines.append(f"\n\u2728 *{len(rows)}* actividad(es) en total")
         try:
             await context.bot.send_message(chat_id=uid, text="\n".join(lines), parse_mode="Markdown")

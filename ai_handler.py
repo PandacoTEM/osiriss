@@ -93,6 +93,21 @@ ACCIONES:
     El usuario quiere extraer texto de una foto (factura, flyer, documento, pizarra, etc).
     Responde pidiendo que envíe la foto.
 
+20. REGISTRAR GASTO: {{"action": "record_expense", "amount": 455, "description": "galletas", "category": "comida"}}
+
+21. RESUMEN DE GASTOS: {{"action": "expense_summary"}}
+    El usuario quiere saber cuánto ha gastado hoy o en general.
+    Responde pidiendo el resumen de gastos del día.
+    El usuario menciona que compró algo con un monto (en colones o dólares).
+    Extrae el monto numérico, una descripción corta, y asigna categoría automática:
+    - "comida": supermercado, restaurante, galletas, café, etc
+    - "transporte": gasolina, bus, taxi, UBER, etc
+    - "servicios": luz, agua, internet, teléfono
+    - "ocio": cine, juegos, streaming, salidas
+    - "salud": farmacia, doctor, medicina
+    - "hogar": artículos para la casa, muebles
+    - "otros": cualquier otra cosa
+
 Ejemplos:
 - "recuérdame llamar al dentista mañana a las 3pm" -> {{"action": "create", "text": "Llamar al dentista", "datetime": "2026-07-15 15:00", "recurring": null}}
 - "recuerda 2350 ropa" -> {{"action": "create", "text": "2350 ropa", "datetime": "2026-07-15 15:00", "recurring": null}}
@@ -128,6 +143,13 @@ Ejemplos:
 - "extrae el texto de esta imagen" -> {{"action": "ocr_image"}}
 - "lee lo que dice esta foto" -> {{"action": "ocr_image"}}
 - "saca el texto de esta factura" -> {{"action": "ocr_image"}}
+- "compre unas galletas a 455 colones" -> {{"action": "record_expense", "amount": 455, "description": "galletas", "category": "comida"}}
+- "eche 3000 de gasolina" -> {{"action": "record_expense", "amount": 3000, "description": "gasolina", "category": "transporte"}}
+- "pague la luz 15000" -> {{"action": "record_expense", "amount": 15000, "description": "pago de luz", "category": "servicios"}}
+- "gaste 10 dolares en Netflix" -> {{"action": "record_expense", "amount": 10, "description": "Netflix", "category": "ocio"}}
+- "compre medicina 5000" -> {{"action": "record_expense", "amount": 5000, "description": "medicina", "category": "salud"}}
+- "gaste 2000 en uber" -> {{"action": "record_expense", "amount": 2000, "description": "uber", "category": "transporte"}}
+- "cuanto he gastado hoy" -> {{"action": "expense_summary"}}
 
 MÚLTIPLES ACCIONES (ejemplos):
 - "toda la semana entro a las 1, sábado libre, domingo a las 9, viernes a las 9, apunta todo" -> {{"actions": [{{"action": "create", "text": "Entrar a trabajar", "datetime": "2026-07-14 13:00", "recurring": "daily", "until": "2026-07-19", "lead_minutes": 120}}, {{"action": "create", "text": "Descanso", "datetime": "2026-07-18 00:00", "recurring": null}}, {{"action": "create", "text": "Entrar a trabajar", "datetime": "2026-07-19 09:00", "recurring": null}}, {{"action": "create", "text": "Entrar a trabajar", "datetime": "2026-07-17 09:00", "recurring": null}}]}}

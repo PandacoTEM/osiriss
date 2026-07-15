@@ -36,6 +36,17 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     c.execute("""
+        CREATE TABLE IF NOT EXISTS expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            description TEXT,
+            category TEXT,
+            currency TEXT DEFAULT 'CRC',
+            created_at TEXT NOT NULL
+        )
+    """)
+    c.execute("""
         CREATE TABLE IF NOT EXISTS activity_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -258,6 +269,37 @@ def search_lists(user_id, query):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT id, name FROM task_lists WHERE user_id = ? AND LOWER(name) LIKE LOWER(?) ORDER BY id DESC", (user_id, f"%{query}%"))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def add_expense(user_id, amount, description=None, category=None, currency="CRC"):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO expenses (user_id, amount, description, category, currency, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+              (user_id, amount, description, category, currency, datetime.now().strftime("%Y-%m-%d %H:%M")))
+    conn.commit()
+    expense_id = c.lastrowid
+    conn.close()
+    return expense_id
+
+def get_today_expenses(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    today = datetime.now().strftime("%Y-%m-%d")
+    c.execute("SELECT amount, description, category, currency FROM expenses WHERE user_id = ? AND created_at LIKE ? ORDER BY id", (user_id, f"{today}%"))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def get_today_total(user_id):
+    rows = get_today_expenses(user_id)
+    return sum(r[0] for r in rows) if rows else 0
+
+def get_recent_expenses(user_id, limit=5):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT amount, description, category, currency, created_at FROM expenses WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))
     rows = c.fetchall()
     conn.close()
     return rows

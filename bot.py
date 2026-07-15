@@ -742,6 +742,9 @@ async def evening_summary(context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Error evening summary for user {uid}: {e}")
 
 def main():
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     init_db()
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))

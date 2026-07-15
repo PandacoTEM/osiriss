@@ -1,0 +1,10 @@
+.env
+*.db
+voice_*.ogg
+photo_*.jpg
+__pycache__/
+*.pyc
+tokens.json
+credentials.json
+
+osiris importante.txt

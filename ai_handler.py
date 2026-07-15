@@ -191,7 +191,7 @@ def analyze_message(user_message, history=None):
     )
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.1-8b-instant",
         messages=[
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_message}
@@ -216,7 +216,7 @@ def answer_question(question, search_query):
     context = search_raw(search_query)
     prompt = ANSWER_PROMPT.format(question=question, context=context or "No se encontraron resultados.")
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.1-8b-instant",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
         max_tokens=600

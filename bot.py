@@ -59,31 +59,47 @@ def smart_alarm(event_dt, lead_minutes):
     return alarm
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    is_creator = uid == CREATOR_ID
+    greeting = "Jefe" if is_creator else "amigo"
     chat_type = update.effective_chat.type if update.effective_chat else "private"
     if chat_type in ("group", "supergroup"):
         await update.message.reply_text(
-            "\U0001f9e0 *Osiris* presente en el grupo, *Jefe*!\n\n"
-            "Menci\u00f3nname con @Osiris_bot o di 'Osiris' seguido de tu mensaje.\n"
-            "Ej: 'Osiris recu\u00e9rdame X ma\u00f1ana' o 'Osiris qu\u00e9 clima hace'"
+            f"\U0001f9e0 *\u00a1Hola! Soy Osiris, tu asistente personal.*\n\n"
+            "Estoy aqu\u00ed para ayudarte con recordatorios, tareas, gastos y m\u00e1s.\n\n"
+            "\U0001f4ac Menci\u00f3name con @Osiris_bot o di 'Osiris' seguido de tu mensaje.\n"
+            "Ej: 'Osiris recu\u00e9rdame X ma\u00f1ana'",
+            parse_mode="Markdown"
         )
         return
-    await update.message.reply_text(
-        "\U0001f9e0 *Osiris* \u2014 Tu asistente de recordatorios\n\n"
-        "*Qu\u00e9 puedo hacer:*\n"
+    msg = (
+        f"\U0001f9e0 *\u00a1Hola, {greeting}! Soy Osiris.*\n\n"
+        "Soy tu asistente personal de recordatorios, apuntes, gastos y m\u00e1s. "
+        "Estoy programado para ayudarte a organizar tu d\u00eda a d\u00eda. "
+        "\u00a1Es un placer trabajar con vos!\n\n"
+        "\U0001f4ac *As\u00ed pod\u00e9s hablarme:*\n"
         f'\u2022 "Recu\u00e9rdame llamar al dentista ma\u00f1ana a las 3pm"\n'
-        f'\u2022 "Recu\u00e9rdale a Dani que me debe $40 el viernes"\n'
-        f'\u2022 "En 5 minutos lavarme los dientes"\n'
         f'\u2022 "Cada lunes sacar la basura a las 8pm"\n'
         f'\u2022 "C\u00f3mo termin\u00f3 Francia vs Espa\u00f1a?"\n'
-        f'\u2022 "Cual es esta canci\u00f3n?" + audio\n'
         f'\u2022 "Agenda cita con el dentista viernes a las 3pm"\n'
-        f'\u2022 "Busca el \u00faltimo video de Bad Bunny"\n'
-        f'\u2022 "Busca en Drive el archivo presupuesto"\n\n'
-        "\U0001f4cb Recibir\u00e1s un resumen diario cada ma\u00f1ana a las 7am.\n"
-        "Usa /auth para conectar Google Calendar, Drive y YouTube.\n"
-        "Usa /panel para abrir el Dashboard web.",
-        parse_mode="Markdown"
+        f'\u2022 "Compr\u00e9 galletas a 455 colones"\n'
+        f'\u2022 "Cre\u00e1 una lista de supermercado"\n'
+        f'\u2022 "Extra\u00e9 el texto de esta factura" + foto\n\n'
+        "\U0001f4a1 *Funciones principales:*\n"
+        "\u2705 Recordatorios con fecha, recurrencia y prioridad\n"
+        "\u2705 B\u00fasqueda en internet con resumen IA\n"
+        "\u2705 Reconocimiento de m\u00fasica (mand\u00e1 un audio)\n"
+        "\u2705 Visi\u00f3n en im\u00e1genes y OCR en facturas\n"
+        "\u2705 Google Calendar, YouTube y Drive con /auth\n"
+        "\u2705 Listas de tareas pendientes\n"
+        "\u2705 Registro de gastos diarios\n"
+        "\u2705 Dashboard web con /panel\n\n"
+        "\U0001f4cb *Res\u00famenes autom\u00e1ticos:*\n"
+        "\u2022 6:00 AM \u2192 Recordatorios del d\u00eda\n"
+        "\u2022 9:00 PM \u2192 Resumen de actividades y gastos\n\n"
+        + ("\u00a1Estoy listo para ayudarte, *Jefe*!" if is_creator else "\u00a1Estoy listo para ayudarte!")
     )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_authenticated():

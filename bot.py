@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-from database import init_db, add_reminder, get_all_active, get_reminders, deactivate_by_id, deactivate_by_text, update_datetime, log_activity, get_today_activity, save_message, get_recent_history, create_task_list, add_task_item, get_task_lists, get_list_items, toggle_task_item, delete_task_list, delete_task_item, search_lists, add_expense, get_today_expenses, get_today_total, get_recent_expenses
+from database import init_db, add_reminder, get_all_active, get_reminders, deactivate_by_id, deactivate_by_text, update_datetime, log_activity, get_today_activity, save_message, get_recent_history, create_task_list, add_task_item, get_task_lists, get_list_items, toggle_task_item, delete_task_list, delete_task_item, search_lists, add_expense, get_today_expenses, get_today_total, get_recent_expenses, authorize_user, deauthorize_user, is_authorized
 from ai_handler import analyze_message, transcribe_audio, answer_question, analyze_image, ocr_image
 from web_search import search as web_search
 from music_recognizer import recognize as recognize_music
@@ -23,6 +23,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TZ = get_localzone()
 
 BOT_USERNAME = "Orisis_diosa_bot"
+CREATOR_ID = int(os.getenv("CREATOR_ID", 0))
+_auth_notified = set()
 
 MEMORY_ACTIONS = {"create", "create_search", "create_friend_reminder", "delete", "create_event", "query"}
 
@@ -107,6 +109,42 @@ async def panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Si est\u00e1s en Render, usa la URL externa.",
         parse_mode="Markdown"
     )
+
+async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    await update.message.reply_text(f"\U0001f464 Tu ID de Telegram: `{uid}`\n\nSi sos el creador, ponelo en la variable `CREATOR_ID` de Render.", parse_mode="Markdown")
+
+async def authorize(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != CREATOR_ID:
+        await update.message.reply_text("\u26d4 Solo el creador puede autorizar usuarios.")
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Us\u00e1: /authorize <id>")
+        return
+    try:
+        target = int(args[0])
+        authorize_user(target)
+        await update.message.reply_text(f"\u2705 Usuario {target} autorizado.")
+    except ValueError:
+        await update.message.reply_text("ID inv\u00e1lido.")
+
+async def deauthorize(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != CREATOR_ID:
+        await update.message.reply_text("\u26d4 Solo el creador puede desautorizar usuarios.")
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Us\u00e1: /deauthorize <id>")
+        return
+    try:
+        target = int(args[0])
+        deauthorize_user(target)
+        await update.message.reply_text(f"\U0001f5d1\ufe0f Usuario {target} desautorizado.")
+    except ValueError:
+        await update.message.reply_text("ID inv\u00e1lido.")
 
 def schedule_from_db(app):
     reminders = get_all_active()
@@ -599,7 +637,25 @@ async def process_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text:
             continue
         await process_action(update, context, text, act, user_id)
 
+async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid == CREATOR_ID or is_authorized(uid):
+        return True
+    if uid not in _auth_notified:
+        _auth_notified.add(uid)
+        name = update.effective_user.first_name or "Alguien"
+        await update.message.reply_text(f"\U0001f512 *Acceso denegado*. Necesit\u00e1s autorizaci\u00f3n del creador.", parse_mode="Markdown")
+        if CREATOR_ID:
+            await context.bot.send_message(
+                chat_id=CREATOR_ID,
+                text=f"\U0001f514 *Nuevo usuario:* {name} (ID: `{uid}`)\n\u00bfLo autorizas? Us\u00e1:\n/authorize {uid}",
+                parse_mode="Markdown"
+            )
+    return False
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update, context):
+        return
     chat_type = update.effective_chat.type if update.effective_chat else "private"
     raw = update.message.text or ""
 
@@ -631,6 +687,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"process_text error: {e}")
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update, context):
+        return
     user_id = update.effective_user.id
     msg = await update.message.reply_text("\U0001f3a4 Procesando audio...")
     try:
@@ -791,6 +849,9 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("auth", auth))
     app.add_handler(CommandHandler("panel", panel))
+    app.add_handler(CommandHandler("myid", myid))
+    app.add_handler(CommandHandler("authorize", authorize))
+    app.add_handler(CommandHandler("deauthorize", deauthorize))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

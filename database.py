@@ -94,6 +94,11 @@ def init_db():
                 token_data TEXT NOT NULL
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS authorized_users (
+                user_id BIGINT PRIMARY KEY
+            )
+        """)
     else:
         c.execute("CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, text TEXT NOT NULL, datetime TEXT NOT NULL, recurring TEXT, search_query TEXT, created_at TEXT NOT NULL, active INTEGER DEFAULT 1)")
         for col in ["search_query", "friend_name", "end_date", "lead_minutes INTEGER DEFAULT 0"]:
@@ -107,6 +112,7 @@ def init_db():
         c.execute("CREATE TABLE IF NOT EXISTS task_lists (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, name TEXT NOT NULL, created_at TEXT NOT NULL)")
         c.execute("CREATE TABLE IF NOT EXISTS task_items (id INTEGER PRIMARY KEY AUTOINCREMENT, list_id INTEGER NOT NULL, text TEXT NOT NULL, completed INTEGER DEFAULT 0, priority INTEGER DEFAULT 0, tags TEXT, created_at TEXT NOT NULL, FOREIGN KEY (list_id) REFERENCES task_lists(id))")
         c.execute("CREATE TABLE IF NOT EXISTS user_tokens (user_id INTEGER PRIMARY KEY, token_data TEXT NOT NULL)")
+        c.execute("CREATE TABLE IF NOT EXISTS authorized_users (user_id INTEGER PRIMARY KEY)")
     conn.commit()
     conn.close()
 
@@ -353,3 +359,28 @@ def get_token(user_id):
     row = c.fetchone()
     conn.close()
     return row[0] if row else None
+
+def authorize_user(user_id):
+    conn = get_conn()
+    c = conn.cursor()
+    if DATABASE_URL:
+        c.execute("INSERT INTO authorized_users (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING", (user_id,))
+    else:
+        c.execute("INSERT OR IGNORE INTO authorized_users (user_id) VALUES (?)", (user_id,))
+    conn.commit()
+    conn.close()
+
+def deauthorize_user(user_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(f"DELETE FROM authorized_users WHERE user_id = {_placeholders(1)}", (user_id,))
+    conn.commit()
+    conn.close()
+
+def is_authorized(user_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(f"SELECT 1 FROM authorized_users WHERE user_id = {_placeholders(1)}", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row is not None

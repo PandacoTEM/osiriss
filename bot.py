@@ -905,21 +905,36 @@ def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     init_db()
-    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("auth", auth))
-    app.add_handler(CommandHandler("panel", panel))
-    app.add_handler(CommandHandler("myid", myid))
-    app.add_handler(CommandHandler("authorize", authorize))
-    app.add_handler(CommandHandler("deauthorize", deauthorize))
-    app.add_handler(CommandHandler("register", register))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    ptb_app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    ptb_app.add_handler(CommandHandler("start", start))
+    ptb_app.add_handler(CommandHandler("auth", auth))
+    ptb_app.add_handler(CommandHandler("panel", panel))
+    ptb_app.add_handler(CommandHandler("myid", myid))
+    ptb_app.add_handler(CommandHandler("authorize", authorize))
+    ptb_app.add_handler(CommandHandler("deauthorize", deauthorize))
+    ptb_app.add_handler(CommandHandler("register", register))
+    ptb_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    ptb_app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     t = threading.Thread(target=run_dashboard, daemon=True)
     t.start()
-    logging.info(f"Osiris bot + Dashboard iniciados (zona: {TZ})")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    if DATABASE_URL:
+        import asyncio
+        loop.run_until_complete(ptb_app.initialize())
+        loop.run_until_complete(ptb_app.start())
+        from dashboard import app as flask_app
+        from flask import request
+        from telegram import Update as TgUpdate
+        @flask_app.route("/webhook", methods=["POST"])
+        def webhook():
+            update = TgUpdate.de_json(request.get_json(force=True), ptb_app.bot)
+            ptb_app.update_queue.put_nowait(update)
+            return "OK", 200
+        loop.run_until_complete(ptb_app.bot.set_webhook(url="https://osiriss.onrender.com/webhook"))
+        logging.info("Webhook configurado en Render")
+        loop.run_forever()
+    else:
+        ptb_app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()

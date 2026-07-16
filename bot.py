@@ -59,6 +59,8 @@ EARLIEST_ALARM_HOUR = 10  # Alarmas antes de esta hora → se mandan a las 9pm d
 
 def smart_alarm(event_dt, lead_minutes):
     alarm = event_dt - timedelta(minutes=lead_minutes)
+    if lead_minutes <= 60:
+        return alarm
     if alarm.hour < EARLIEST_ALARM_HOUR:
         alarm = alarm.replace(hour=21, minute=0, second=0) - timedelta(days=1)
     return alarm

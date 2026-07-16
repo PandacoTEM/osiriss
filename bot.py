@@ -31,7 +31,7 @@ BOT_USERNAME = "Orisis_diosa_bot"
 CREATOR_ID = int(os.getenv("CREATOR_ID", 0))
 _auth_notified = set()
 
-MEMORY_ACTIONS = {"create", "create_search", "create_friend_reminder", "delete", "create_event", "query"}
+MEMORY_ACTIONS = {"chat", "create", "create_search", "create_friend_reminder", "delete", "create_event", "query"}
 
 def save_exchange(user_id, user_msg, bot_response, action):
     if action in MEMORY_ACTIONS:
@@ -540,7 +540,9 @@ async def process_action(update, context, text, result, user_id):
             await update.message.reply_text(f"No encontr\u00e9 ning\u00fan recordatorio con '{search_text}'")
 
     elif action == "chat":
-        await update.message.reply_text(result.get("message", "\U0001f60a"))
+        msg = result.get("message", "\U0001f60a")
+        await update.message.reply_text(msg)
+        save_exchange(user_id, text, msg, action)
 
     elif action == "create_task_list":
         name = result.get("name", "lista")

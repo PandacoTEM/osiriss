@@ -3,7 +3,6 @@ import re
 import threading
 import logging
 from datetime import datetime, timedelta, time
-from tzlocal import get_localzone
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -20,7 +19,13 @@ load_dotenv()
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TZ = get_localzone()
+ZONE_STR = os.getenv("TIMEZONE") or os.getenv("TZ")
+if ZONE_STR:
+    from zoneinfo import ZoneInfo
+    TZ = ZoneInfo(ZONE_STR)
+else:
+    from tzlocal import get_localzone
+    TZ = get_localzone()
 
 BOT_USERNAME = "Orisis_diosa_bot"
 CREATOR_ID = int(os.getenv("CREATOR_ID", 0))
@@ -278,11 +283,8 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
             answer = answer_question(data['text'], data['search_query'])
             await context.bot.send_message(chat_id=data["uid"], text=answer, parse_mode="Markdown")
         except Exception as e:
-            try:
-                await context.bot.send_message(chat_id=data["uid"], text=answer)
-            except Exception:
-                await context.bot.send_message(chat_id=data["uid"], text="No pude obtener la informaci\u00f3n.")
             logging.error(f"Search error en recordatorio: {e}")
+            await context.bot.send_message(chat_id=data["uid"], text="No pude obtener la informaci\u00f3n.")
     if data.get("recurring"):
         current_dt = parse_local(data["dt_str"])
         next_dt = calc_next(current_dt, data["recurring"], data.get("end_date"))
@@ -368,6 +370,8 @@ async def process_action(update, context, text, result, user_id):
                 data={"rid": rid, "uid": user_id, "text": reminder_text, "recurring": recurring, "dt_str": dt_str, "search_query": query, "friend_name": None, "end_date": result.get("until") or result.get("end_date"), "lead_minutes": result.get("lead_minutes", 0)},
                 name=str(rid)
             )
+        elif dt > now:
+            await context.bot.send_message(chat_id=user_id, text=f"\U0001f50d *Jefe, b\u00fasqueda agendada:* {reminder_text}", parse_mode="Markdown")
         await update.message.reply_text(f"\u2705 *Jefe*, recordatorio con b\u00fasqueda guardado:\n\n'{reminder_text}'\n\U0001f4c5 {dt_str}\n\U0001f50d Buscar\u00e9: {query}")
         save_exchange(user_id, text, f"Recordatorio con b\u00fasqueda: {reminder_text}", action)
 
@@ -395,6 +399,8 @@ async def process_action(update, context, text, result, user_id):
                 data={"rid": rid, "uid": user_id, "text": reminder_text, "recurring": recurring, "dt_str": dt_str, "search_query": None, "friend_name": friend_name, "end_date": result.get("until") or result.get("end_date"), "lead_minutes": result.get("lead_minutes", 0)},
                 name=str(rid)
             )
+        elif dt > now:
+            await context.bot.send_message(chat_id=user_id, text=f"\U0001f4e8 *Jefe, recordatorio para {friend_name}:* {reminder_text}", parse_mode="Markdown")
         await update.message.reply_text(f"\u2705 *Jefe*, recordatorio para *{friend_name}* guardado:\n\n'{reminder_text}'\n\U0001f4c5 {dt_str}", parse_mode="Markdown")
         save_exchange(user_id, text, f"Recordatorio para {friend_name}: {reminder_text}", action)
 
@@ -497,11 +503,8 @@ async def process_action(update, context, text, result, user_id):
             log_activity(user_id, "buscar_internet", query)
             await msg.edit_text(answer, parse_mode="Markdown")
         except Exception as e:
-            try:
-                await msg.edit_text(answer)
-            except Exception:
-                await msg.edit_text("No pude obtener la informaci\u00f3n en este momento.")
             logging.error(f"Search error: {e}")
+            await msg.edit_text("No pude obtener la informaci\u00f3n en este momento.")
 
     elif action == "query":
         date_filter = result.get("filter", "all")
@@ -794,7 +797,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_ocr:
             text = ocr_image(file_path)
             log_activity(user_id, "ocr_imagen", text[:100])
-            import re
             amounts = re.findall(r'(?:total|monto|pagar|importe|neto)[:\s]*\$\s*([\d,.]+)', text, re.I)
             if not amounts:
                 amounts = re.findall(r'(?:total|monto|pagar|importe|neto)[:\s]*([\d,.]+)', text, re.I)
@@ -807,13 +809,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.edit_text(f"\U0001f4dd *Texto extra\u00eddo:*\n\n{text}\n\n\U0001f4b0 *Total detectado:* {total} CRC \u2014 registrado como gasto", parse_mode="Markdown")
             else:
                 await msg.edit_text(f"\U0001f4dd *Texto extra\u00eddo:*\n\n{text}", parse_mode="Markdown")
-        elif not caption:
-            desc = analyze_image(file_path, "Describe esta imagen en detalle.")
+        else:
+            prompt = caption or "Describe esta imagen en detalle."
+            desc = analyze_image(file_path, prompt)
             log_activity(user_id, "vision_imagen", desc[:100])
             await msg.edit_text(f"\U0001f5bc *Lo que veo:*\n\n{desc}", parse_mode="Markdown")
-        else:
-            await msg.edit_text(f"\U0001f4dd Procesando: \"{caption}\"")
-            await process_text(update, context, caption)
 
         os.remove(file_path)
     except Exception as e:

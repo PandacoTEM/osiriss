@@ -2,7 +2,6 @@ import os
 import json
 import logging
 from datetime import datetime
-from tzlocal import get_localzone
 from groq import Groq
 from web_search import search_raw
 
@@ -172,9 +171,17 @@ Pregunta: {question}
 Info disponible:
 {context}"""
 
+def _get_tz():
+    z = os.getenv("TIMEZONE") or os.getenv("TZ")
+    if z:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(z)
+    from tzlocal import get_localzone
+    return get_localzone()
+
 def analyze_message(user_message, history=None):
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-    tz = get_localzone()
+    tz = _get_tz()
     now = datetime.now(tz)
     hist_text = ""
     if history:

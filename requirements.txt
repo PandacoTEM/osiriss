@@ -1,5 +1,6 @@
 python-telegram-bot[job-queue]==21.10
 groq==0.18.0
+openai>=1.0.0
 python-dotenv==1.1.0
 ddgs>=9.0.0
 google-auth-oauthlib>=1.2.1

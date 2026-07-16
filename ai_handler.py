@@ -2,6 +2,7 @@ import os
 import json
 import logging
 from datetime import datetime
+from openai import OpenAI
 from groq import Groq
 from web_search import search_raw
 
@@ -179,8 +180,36 @@ def _get_tz():
     from tzlocal import get_localzone
     return get_localzone()
 
-def analyze_message(user_message, history=None):
+def _call_ai(messages, model=None, response_format=None, temperature=0.1, max_tokens=500):
+    or_key = os.getenv("OPENROUTER_API_KEY")
+    if or_key:
+        try:
+            client = OpenAI(
+                api_key=or_key,
+                base_url="https://openrouter.ai/api/v1"
+            )
+            kwargs = dict(
+                model="google/gemma-4-26b-a4b-it:free",
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            if response_format:
+                kwargs["response_format"] = response_format
+            response = client.chat.completions.create(**kwargs)
+            return response.choices[0].message.content
+        except Exception as e:
+            logging.warning(f"OpenRouter fall\u00f3: {e}. Usando Groq.")
+
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    groq_model = model or "llama-3.1-8b-instant"
+    kwargs = dict(model=groq_model, messages=messages, temperature=temperature, max_tokens=max_tokens)
+    if response_format:
+        kwargs["response_format"] = response_format
+    response = client.chat.completions.create(**kwargs)
+    return response.choices[0].message.content
+
+def analyze_message(user_message, history=None):
     tz = _get_tz()
     now = datetime.now(tz)
     hist_text = ""
@@ -197,8 +226,7 @@ def analyze_message(user_message, history=None):
         history=hist_text
     )
 
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+    content = _call_ai(
         messages=[
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_message}
@@ -208,7 +236,6 @@ def analyze_message(user_message, history=None):
         max_tokens=500
     )
 
-    content = response.choices[0].message.content.strip()
     try:
         result = json.loads(content)
         if isinstance(result, dict):
@@ -219,24 +246,19 @@ def analyze_message(user_message, history=None):
     return {"action": "chat", "message": "No entend\u00ed bien. \u00bfPuedes repetirlo?"}
 
 def answer_question(question, search_query):
-    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
     context = search_raw(search_query)
     prompt = ANSWER_PROMPT.format(question=question, context=context or "No se encontraron resultados.")
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+    return _call_ai(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
         max_tokens=600
     )
-    return response.choices[0].message.content
 
 def analyze_image(image_path, prompt="Describe esta imagen en detalle:"):
     import base64
-    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
     with open(image_path, "rb") as f:
         image_data = base64.b64encode(f.read()).decode("utf-8")
-    response = client.chat.completions.create(
-        model="qwen/qwen3.6-27b",
+    return _call_ai(
         messages=[
             {
                 "role": "user",
@@ -246,10 +268,10 @@ def analyze_image(image_path, prompt="Describe esta imagen en detalle:"):
                 ]
             }
         ],
+        model="qwen/qwen3.6-27b",
         temperature=0.3,
         max_tokens=500
     )
-    return response.choices[0].message.content
 
 def ocr_image(image_path):
     return analyze_image(image_path, "Extrae TODO el texto visible en esta imagen. Si es una factura, incluye montos, fechas y conceptos. Si es un flyer, incluye el texto completo. Responde SOLO con el texto extraído, sin comentarios adicionales.")

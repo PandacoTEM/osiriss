@@ -5,6 +5,7 @@ from datetime import datetime
 from openai import OpenAI
 from groq import Groq
 from web_search import search_raw
+from updates import UPDATES
 
 SYSTEM_PROMPT = """Eres Osiris, un asistente de recordatorios personal.
 Analiza el mensaje del usuario y responde SOLO con un JSON válido.
@@ -303,6 +304,11 @@ Reglas:
 - NO uses markdown excesivo
 - 3-6 líneas máximo a menos que el jefe pida más detalles
 
+Si el jefe pregunta sobre tus actualizaciones, cambios o qué hay de nuevo,
+revisá este historial de actualizaciones y resumíselo en español tico relajado:
+
+{updates}
+
 {history}
 
 Mensaje del jefe: {message}"""
@@ -318,13 +324,14 @@ def generate_chat_response(user_message, history=None):
         hist_text = "\n".join(lines)
     prompt = CHAT_SYSTEM_PROMPT.format(
         user="jefe",
+        updates=UPDATES,
         history=hist_text,
         message=user_message
     )
     return _call_ai(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.7,
-        max_tokens=400
+        max_tokens=500
     )
 
 def transcribe_audio(file_path):

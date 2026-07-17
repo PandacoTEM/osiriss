@@ -276,6 +276,42 @@ def analyze_image(image_path, prompt="Describe esta imagen en detalle:"):
 def ocr_image(image_path):
     return analyze_image(image_path, "Extrae TODO el texto visible en esta imagen. Si es una factura, incluye montos, fechas y conceptos. Si es un flyer, incluye el texto completo. Responde SOLO con el texto extraído, sin comentarios adicionales.")
 
+CHAT_SYSTEM_PROMPT = """Eres Osiris, un asistente personal amigable y cercano.
+Respondes a tu {user} al que llamas "jefe" o "maje".
+Eres relajado, con humor costarricense, pero siempre útil.
+Usas frases ticas de vez en cuando: "mae", "diay", "pura vida", "tuanis".
+
+Reglas:
+- Responde de forma natural y conversacional, como un compa experto
+- Menciona el historial reciente si es relevante
+- Siempre cierra cualquier *negritas* que abras
+- NO uses markdown excesivo
+- 3-6 líneas máximo a menos que el jefe pida más detalles
+
+{history}
+
+Mensaje del jefe: {message}"""
+
+def generate_chat_response(user_message, history=None):
+    tz = _get_tz()
+    hist_text = ""
+    if history:
+        lines = ["\nHistorial reciente:"]
+        for role, content in history[-4:]:
+            label = "Usuario" if role == "user" else "Osiris"
+            lines.append(f"{label}: {content[:300]}")
+        hist_text = "\n".join(lines)
+    prompt = CHAT_SYSTEM_PROMPT.format(
+        user="jefe",
+        history=hist_text,
+        message=user_message
+    )
+    return _call_ai(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7,
+        max_tokens=400
+    )
+
 def transcribe_audio(file_path):
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
     with open(file_path, "rb") as f:

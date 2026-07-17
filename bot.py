@@ -8,7 +8,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 from database import init_db, add_reminder, get_all_active, get_reminders, deactivate_by_id, deactivate_by_text, update_datetime, log_activity, get_today_activity, save_message, get_recent_history, create_task_list, add_task_item, get_task_lists, get_list_items, toggle_task_item, delete_task_list, delete_task_item, search_lists, add_expense, get_today_expenses, get_today_total, get_recent_expenses, authorize_user, deauthorize_user, is_authorized, create_auth_code, redeem_auth_code, DATABASE_URL
-from ai_handler import analyze_message, transcribe_audio, answer_question, analyze_image, ocr_image
+from ai_handler import analyze_message, transcribe_audio, answer_question, analyze_image, ocr_image, generate_chat_response
 from web_search import search as web_search
 from music_recognizer import recognize as recognize_music
 from auth import get_auth_url, exchange_code, is_authenticated
@@ -542,7 +542,10 @@ async def process_action(update, context, text, result, user_id):
             await update.message.reply_text(f"No encontr\u00e9 ning\u00fan recordatorio con '{search_text}'")
 
     elif action == "chat":
-        msg = result.get("message", "\U0001f60a")
+        try:
+            msg = generate_chat_response(text, history)
+        except Exception:
+            msg = result.get("message", "\U0001f60a")
         await update.message.reply_text(msg)
         save_exchange(user_id, text, msg, action)
 
@@ -701,6 +704,12 @@ async def process_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text:
         action = act.get("action")
         if not action:
             logging.warning(f"No action in: {act}")
+            try:
+                msg = generate_chat_response(text, history)
+            except Exception:
+                msg = "\U0001f60a"
+            await update.message.reply_text(msg)
+            save_exchange(user_id, text, msg, "chat")
             continue
         await process_action(update, context, text, act, user_id)
 

@@ -826,9 +826,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(app):
     schedule_from_db(app)
-    t6 = local_now().replace(hour=6, minute=0, second=0, microsecond=0) + timedelta(days=1)
-    app.job_queue.run_daily(daily_reminders, time=t6.time(), name="daily_reminders")
-    app.job_queue.run_daily(evening_summary, time=time(hour=21, minute=0), name="evening_summary")
+    t6 = time(hour=6, minute=0, tzinfo=TZ)
+    t21 = time(hour=21, minute=0, tzinfo=TZ)
+    app.job_queue.run_daily(daily_reminders, time=t6, name="daily_reminders")
+    app.job_queue.run_daily(evening_summary, time=t21, name="evening_summary")
     logging.info(f"Recordatorios del día agendados a las 6:00")
     logging.info(f"Resumen nocturno agendado a las 21:00")
 

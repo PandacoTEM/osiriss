@@ -31,7 +31,7 @@ BOT_USERNAME = "Orisis_diosa_bot"
 CREATOR_ID = int(os.getenv("CREATOR_ID", 0))
 _auth_notified = set()
 
-MEMORY_ACTIONS = {"chat", "create", "create_search", "create_friend_reminder", "delete", "create_event", "query"}
+MEMORY_ACTIONS = {"chat", "clarify", "create", "create_search", "create_friend_reminder", "delete", "create_event", "query"}
 
 def save_exchange(user_id, user_msg, bot_response, action):
     if action in MEMORY_ACTIONS:
@@ -546,6 +546,11 @@ async def process_action(update, context, text, result, user_id):
             msg = generate_chat_response(text, history)
         except Exception:
             msg = result.get("message", "\U0001f60a")
+        await update.message.reply_text(msg)
+        save_exchange(user_id, text, msg, action)
+
+    elif action == "clarify":
+        msg = result.get("message", "Jefe, no entendí bien. ¿Podés repetirlo pero más específico?")
         await update.message.reply_text(msg)
         save_exchange(user_id, text, msg, action)
 

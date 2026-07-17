@@ -14,6 +14,7 @@ from music_recognizer import recognize as recognize_music
 from auth import get_auth_url, exchange_code, is_authenticated
 from google_tools import create_event, search_youtube, search_drive
 from dashboard import run_dashboard
+from twilio_handler import make_call
 
 load_dotenv()
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -31,7 +32,7 @@ BOT_USERNAME = "Orisis_diosa_bot"
 CREATOR_ID = int(os.getenv("CREATOR_ID", 0))
 _auth_notified = set()
 
-MEMORY_ACTIONS = {"chat", "clarify", "create", "create_search", "create_friend_reminder", "delete", "create_event", "query"}
+MEMORY_ACTIONS = {"chat", "clarify", "create", "create_search", "create_friend_reminder", "delete", "create_event", "query", "make_call"}
 
 def save_exchange(user_id, user_msg, bot_response, action):
     if action in MEMORY_ACTIONS:
@@ -553,6 +554,16 @@ async def process_action(update, context, text, result, user_id):
         msg = result.get("message", "Jefe, no entendí bien. ¿Podés repetirlo pero más específico?")
         await update.message.reply_text(msg)
         save_exchange(user_id, text, msg, action)
+
+    elif action == "make_call":
+        msg = result.get("message", "Jefe, esto es Osiris llamando.")
+        ok, info = make_call(msg)
+        if ok:
+            await update.message.reply_text(f"\U0001f4de *Llamada iniciada*: \"{msg}\"")
+        else:
+            await update.message.reply_text(f"\u26a0\ufe0f No pude llamar: {info}")
+        log_activity(user_id, "llamada_telefonica", msg[:100])
+        save_exchange(user_id, text, f"Llamada: {msg[:50]}", action)
 
     elif action == "create_task_list":
         name = result.get("name", "lista")

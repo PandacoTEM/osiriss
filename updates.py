@@ -1,6 +1,12 @@
 UPDATES = """
 === ULTIMAS ACTUALIZACIONES DE OSIRIS ===
 
+[17 Jul 2026] - Llamadas telefónicas con Twilio
+- Osiris ahora puede LLAMARTE por teléfono para recordatorios importantes
+- Decile "llámame" y te llamo al toque con un mensaje
+- Voz en español tico, claridad de texto a voz
+- Crédito gratis de $15 incluido (primeras ~120 llamadas)
+
 [16 Jul 2026] - Chat natural mejorado
 - Ahora respondo con tono tico relajado (mae, diay, pura vida)
 - Temperatura más alta para respuestas menos robóticas

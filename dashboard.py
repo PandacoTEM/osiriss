@@ -1,10 +1,21 @@
 import os
-import threading
-from flask import Flask, request, render_template_string, redirect
-from database import get_all_active, get_reminders, deactivate_by_id, update_datetime, get_task_lists, get_list_items, toggle_task_item, search_lists, delete_task_item, get_conn, DATABASE_URL
+import hmac
+import secrets
+from dotenv import load_dotenv
+from flask import Flask, request, render_template_string, redirect, session
+
+load_dotenv()
+
+from database import deactivate_by_id, get_task_lists, get_list_items, toggle_task_item, delete_task_item, get_conn, DATABASE_URL
 
 app = Flask(__name__)
-PASSWORD = os.getenv("DASHBOARD_PASSWORD", "osiris123")
+PASSWORD = os.getenv("DASHBOARD_PASSWORD")
+app.secret_key = os.getenv("DASHBOARD_SESSION_SECRET") or secrets.token_bytes(32)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Strict",
+    SESSION_COOKIE_SECURE=bool(DATABASE_URL),
+)
 
 HTML = """<!DOCTYPE html>
 <html lang="es">
@@ -36,7 +47,13 @@ h1 { color: #c0c0ff; font-weight: 300; }
 <body>
 <div class="container">
 <h1>\U0001f9e0 Osiris Dashboard</h1>
-<p class="text-secondary mb-4">Panel de control</p>
+<div class="d-flex justify-content-between align-items-center mb-4">
+<p class="text-secondary mb-0">Panel de control</p>
+<form method="POST" action="/logout">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<button class="btn btn-outline-light btn-sm" type="submit">Salir</button>
+</form>
+</div>
 
 <ul class="nav nav-tabs mb-3">
 <li class="nav-item"><a class="nav-link {% if tab=='reminders' %}active{% endif %}" href="/?tab=reminders">\U0001f514 Recordatorios</a></li>
@@ -66,7 +83,10 @@ h1 { color: #c0c0ff; font-weight: 300; }
 <td>{% if r.active %}<span class="badge badge-active">activo</span>{% else %}<span class="badge badge-inactive">inactivo</span>{% endif %}</td>
 <td>
 <a href="/edit/{{ r.id }}" class="btn btn-outline-light btn-sm">\u270f\ufe0f</a>
-<a href="/delete/{{ r.id }}" class="btn btn-outline-danger btn-sm" onclick="return confirm('\u00bfEliminar?')">\U0001f5d1\ufe0f</a>
+<form method="POST" action="/delete/{{ r.id }}" class="d-inline" onsubmit="return confirm('\u00bfEliminar?')">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<button type="submit" class="btn btn-outline-danger btn-sm">\U0001f5d1\ufe0f</button>
+</form>
 </td>
 </tr>
 {% endfor %}
@@ -84,7 +104,10 @@ h1 { color: #c0c0ff; font-weight: 300; }
 {% for item in lst.items %}
 <tr>
 <td style="width:40px">
-<a href="/task_toggle/{{ item.id }}?pwd={{ pwd }}" class="check-btn">{% if item.completed %}\u2705{% else %}\u26ab{% endif %}</a>
+<form method="POST" action="/task_toggle/{{ item.id }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<button type="submit" class="btn btn-link check-btn p-0">{% if item.completed %}\u2705{% else %}\u26ab{% endif %}</button>
+</form>
 </td>
 <td class="{% if item.completed %}text-decoration-line-through text-secondary{% endif %}">
 {{ item.text }}
@@ -92,7 +115,10 @@ h1 { color: #c0c0ff; font-weight: 300; }
 {% if item.tags %}<small class="text-secondary">#{{ item.tags }}</small>{% endif %}
 </td>
 <td style="width:40px">
-<a href="/task_delete/{{ item.id }}?pwd={{ pwd }}" class="btn btn-outline-danger btn-sm py-0" onclick="return confirm('\u00bfEliminar?')">\U0001f5d1\ufe0f</a>
+<form method="POST" action="/task_delete/{{ item.id }}" onsubmit="return confirm('\u00bfEliminar?')">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<button type="submit" class="btn btn-outline-danger btn-sm py-0">\U0001f5d1\ufe0f</button>
+</form>
 </td>
 </tr>
 {% endfor %}
@@ -127,6 +153,7 @@ body { background: #0f0f1a; color: #e0e0e0; padding: 20px; }
 <h1>\u270f\ufe0f Editar recordatorio</h1>
 <div class="card p-4 mt-3">
 <form method="POST">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 <div class="mb-3">
 <label class="form-label">Texto</label>
 <input name="text" class="form-control" value="{{ r.text }}" required>
@@ -153,9 +180,70 @@ body { background: #0f0f1a; color: #e0e0e0; padding: 20px; }
 </body>
 </html>"""
 
+LOGIN_HTML = """<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Acceso - Osiris</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body { background: #0f0f1a; color: #e0e0e0; min-height: 100vh; display: grid; place-items: center; }
+.login-panel { width: min(92vw, 360px); }
+.form-control { background: #1a1a2e; color: #e0e0e0; border-color: #2a2a4a; }
+.form-control:focus { background: #1a1a2e; color: #e0e0e0; border-color: #6a6aff; box-shadow: none; }
+</style>
+</head>
+<body>
+<main class="login-panel">
+<h1 class="h3 mb-3">Osiris Dashboard</h1>
+{% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+<form method="POST">
+<label class="form-label" for="password">Contrase\u00f1a</label>
+<input id="password" name="password" type="password" class="form-control mb-3" required autofocus>
+<button class="btn btn-primary w-100" type="submit">Entrar</button>
+</form>
+</main>
+</body>
+</html>"""
+
 def check_auth():
-    pwd = request.args.get("pwd") or request.form.get("pwd")
-    return pwd == PASSWORD
+    return bool(PASSWORD and session.get("authenticated"))
+
+def get_csrf_token():
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+def check_csrf():
+    expected = session.get("csrf_token", "")
+    provided = request.form.get("csrf_token", "")
+    return bool(expected and hmac.compare_digest(expected, provided))
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not PASSWORD:
+        return "Dashboard deshabilitado: configura DASHBOARD_PASSWORD", 503
+    if request.method == "POST":
+        provided = request.form.get("password", "")
+        if hmac.compare_digest(provided, PASSWORD):
+            session.clear()
+            session["authenticated"] = True
+            session["csrf_token"] = secrets.token_urlsafe(32)
+            return redirect("/")
+        return render_template_string(LOGIN_HTML, error="Contrase\u00f1a incorrecta"), 401
+    if check_auth():
+        return redirect("/")
+    return render_template_string(LOGIN_HTML, error=None)
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    if not check_auth() or not check_csrf():
+        return "Acceso denegado", 403
+    session.clear()
+    return redirect("/login")
 
 @app.route("/health")
 def health():
@@ -164,10 +252,9 @@ def health():
 @app.route("/")
 def index():
     if not check_auth():
-        return "Acceso denegado", 401
+        return redirect("/login")
     tab = request.args.get("tab", "reminders")
     f = request.args.get("filter", "all")
-    pwd = request.args.get("pwd") or request.form.get("pwd")
     if tab == "tasks":
         conn = get_conn()
         c = conn.cursor()
@@ -182,7 +269,12 @@ def index():
                 items_data = [{"id": i[0], "text": i[1], "completed": bool(i[2]), "priority": i[3], "tags": i[4]} for i in items]
                 done = sum(1 for i in items if i[2])
                 task_lists.append({"name": lname, "items": items_data, "done": done, "total": len(items)})
-        return render_template_string(HTML, tab=tab, task_lists=task_lists, pwd=pwd or PASSWORD)
+        return render_template_string(
+            HTML,
+            tab=tab,
+            task_lists=task_lists,
+            csrf_token=get_csrf_token(),
+        )
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT id, user_id, text, datetime, recurring, active FROM reminders ORDER BY datetime DESC LIMIT 100")
@@ -192,28 +284,37 @@ def index():
         rows = [r for r in rows if r["active"]]
     elif f == "inactive":
         rows = [r for r in rows if not r["active"]]
-    return render_template_string(HTML, reminders=rows, f=f, tab=tab, task_lists=[])
+    return render_template_string(
+        HTML,
+        reminders=rows,
+        f=f,
+        tab=tab,
+        task_lists=[],
+        csrf_token=get_csrf_token(),
+    )
 
-@app.route("/task_toggle/<int:item_id>")
+@app.route("/task_toggle/<int:item_id>", methods=["POST"])
 def task_toggle(item_id):
     if not check_auth():
-        return "Acceso denegado", 401
+        return redirect("/login")
+    if not check_csrf():
+        return "Solicitud invalida", 403
     toggle_task_item(item_id)
-    pwd = request.args.get("pwd") or PASSWORD
-    return redirect(f"/?tab=tasks&pwd={pwd}")
+    return redirect("/?tab=tasks")
 
-@app.route("/task_delete/<int:item_id>")
+@app.route("/task_delete/<int:item_id>", methods=["POST"])
 def task_delete(item_id):
     if not check_auth():
-        return "Acceso denegado", 401
+        return redirect("/login")
+    if not check_csrf():
+        return "Solicitud invalida", 403
     delete_task_item(item_id)
-    pwd = request.args.get("pwd") or PASSWORD
-    return redirect(f"/?tab=tasks&pwd={pwd}")
+    return redirect("/?tab=tasks")
 
 @app.route("/edit/<int:rid>", methods=["GET", "POST"])
 def edit(rid):
     if not check_auth():
-        return "Acceso denegado", 401
+        return redirect("/login")
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT id, text, datetime, recurring FROM reminders WHERE id=%s" if DATABASE_URL else "SELECT id, text, datetime, recurring FROM reminders WHERE id=?", (rid,))
@@ -223,6 +324,8 @@ def edit(rid):
         return "No encontrado", 404
     r = {"id": row[0], "text": row[1], "datetime": row[2], "recurring": row[3]}
     if request.method == "POST":
+        if not check_csrf():
+            return "Solicitud invalida", 403
         text = request.form["text"]
         dt = request.form["datetime"]
         recurring = request.form.get("recurring") or None
@@ -231,15 +334,17 @@ def edit(rid):
         c.execute("UPDATE reminders SET text=%s, datetime=%s, recurring=%s WHERE id=%s" if DATABASE_URL else "UPDATE reminders SET text=?, datetime=?, recurring=? WHERE id=?", (text, dt, recurring, rid))
         conn.commit()
         conn.close()
-        return redirect(f"/?pwd={PASSWORD}")
-    return render_template_string(EDIT_HTML, r=r)
+        return redirect("/")
+    return render_template_string(EDIT_HTML, r=r, csrf_token=get_csrf_token())
 
-@app.route("/delete/<int:rid>")
+@app.route("/delete/<int:rid>", methods=["POST"])
 def delete(rid):
     if not check_auth():
-        return "Acceso denegado", 401
+        return redirect("/login")
+    if not check_csrf():
+        return "Solicitud invalida", 403
     deactivate_by_id(rid)
-    return redirect(f"/?pwd={PASSWORD}")
+    return redirect("/")
 
 def run_dashboard():
     port = int(os.getenv("PORT", 5000))

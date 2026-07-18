@@ -1,9 +1,13 @@
 import os
 import re
+import hmac
 import threading
 import logging
 from datetime import datetime, timedelta, time
 from dotenv import load_dotenv
+
+load_dotenv()
+
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -14,12 +18,13 @@ from music_recognizer import recognize as recognize_music
 from auth import get_auth_url, exchange_code, is_authenticated
 from google_tools import create_event, search_youtube, search_drive
 from dashboard import run_dashboard
-from twilio_handler import make_call
 
-load_dotenv()
+
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET")
+WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "https://osiriss.onrender.com/webhook")
 ZONE_STR = os.getenv("TIMEZONE") or os.getenv("TZ")
 if ZONE_STR:
     from zoneinfo import ZoneInfo
@@ -32,7 +37,7 @@ BOT_USERNAME = "Orisis_diosa_bot"
 CREATOR_ID = int(os.getenv("CREATOR_ID", 0))
 _auth_notified = set()
 
-MEMORY_ACTIONS = {"chat", "clarify", "create", "create_search", "create_friend_reminder", "delete", "create_event", "query", "make_call"}
+MEMORY_ACTIONS = {"chat", "clarify", "create", "create_search", "create_friend_reminder", "delete", "create_event", "query"}
 
 def save_exchange(user_id, user_msg, bot_response, action):
     if action in MEMORY_ACTIONS:
@@ -149,11 +154,15 @@ async def auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Error: {e}")
 
 async def panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pwd = os.getenv("DASHBOARD_PASSWORD", "osiris123")
+    if update.effective_user.id != CREATOR_ID:
+        await update.message.reply_text("\u26d4 Solo el creador puede abrir el panel.")
+        return
+    dashboard_url = os.getenv("DASHBOARD_URL")
+    if not dashboard_url:
+        dashboard_url = WEBHOOK_URL.removesuffix("/webhook") if DATABASE_URL else "http://localhost:5000"
     await update.message.reply_text(
-        f"\U0001f9e0 *Panel Osiris*\n\nAbre tu navegador y visita:\n"
-        f"http://localhost:5000/?pwd={pwd}\n\n"
-        "Si est\u00e1s en Render, usa la URL externa.",
+        f"\U0001f9e0 *Panel Osiris*\n\nAbre tu navegador y visita:\n{dashboard_url}\n\n"
+        "Inicia sesi\u00f3n con la contrase\u00f1a privada del panel.",
         parse_mode="Markdown"
     )
 
@@ -555,16 +564,6 @@ async def process_action(update, context, text, result, user_id):
         await update.message.reply_text(msg)
         save_exchange(user_id, text, msg, action)
 
-    elif action == "make_call":
-        msg = result.get("message", "Jefe, esto es Osiris llamando.")
-        ok, info = make_call(msg)
-        if ok:
-            await update.message.reply_text(f"\U0001f4de *Llamada iniciada*: \"{msg}\"")
-        else:
-            await update.message.reply_text(f"\u26a0\ufe0f No pude llamar: {info}")
-        log_activity(user_id, "llamada_telefonica", msg[:100])
-        save_exchange(user_id, text, f"Llamada: {msg[:50]}", action)
-
     elif action == "create_task_list":
         name = result.get("name", "lista")
         list_id = create_task_list(user_id, name)
@@ -811,6 +810,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Voice error: {e}")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update, context):
+        return
     user_id = update.effective_user.id
     caption = strip_wake_word(update.message.caption or "")
     msg = await update.message.reply_text("\U0001f5bc Procesando...")
@@ -948,17 +949,35 @@ def main():
     ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     if DATABASE_URL:
+        if not WEBHOOK_SECRET:
+            raise RuntimeError("TELEGRAM_WEBHOOK_SECRET es obligatorio en modo webhook")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", WEBHOOK_SECRET):
+            raise RuntimeError("TELEGRAM_WEBHOOK_SECRET debe usar solo A-Z, a-z, 0-9, _ y -")
         from dashboard import app as flask_app
         from flask import request
         from telegram import Update as TgUpdate
         @flask_app.route("/webhook", methods=["POST"])
         def webhook():
-            update = TgUpdate.de_json(request.get_json(force=True), ptb_app.bot)
+            provided_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+            if not hmac.compare_digest(provided_secret, WEBHOOK_SECRET):
+                return "Forbidden", 403
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return "Bad Request", 400
+            try:
+                update = TgUpdate.de_json(payload, ptb_app.bot)
+            except Exception:
+                logging.warning("Webhook rechazado: actualizacion invalida")
+                return "Bad Request", 400
             loop.call_soon_threadsafe(ptb_app.update_queue.put_nowait, update)
             return "OK", 200
         loop.run_until_complete(ptb_app.initialize())
         loop.run_until_complete(ptb_app.start())
-        loop.run_until_complete(ptb_app.bot.set_webhook(url="https://osiriss.onrender.com/webhook"))
+        loop.run_until_complete(ptb_app.bot.set_webhook(
+            url=WEBHOOK_URL,
+            secret_token=WEBHOOK_SECRET,
+            allowed_updates=Update.ALL_TYPES,
+        ))
         logging.info("Webhook configurado en Render")
         t = threading.Thread(target=run_dashboard, daemon=True)
         t.start()

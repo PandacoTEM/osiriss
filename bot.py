@@ -13,7 +13,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 from database import init_db, add_reminder, get_all_active, get_reminders, deactivate_by_id, deactivate_by_text, update_datetime, log_activity, get_today_activity, save_message, get_recent_history, create_task_list, add_task_item, get_task_lists, get_list_items, toggle_task_item, delete_task_list, delete_task_item, search_lists, add_expense, get_today_expenses, get_today_total, get_recent_expenses, authorize_user, deauthorize_user, is_authorized, create_auth_code, redeem_auth_code, DATABASE_URL
 from ai_handler import analyze_message, transcribe_audio, answer_question, analyze_image, ocr_image, generate_chat_response
-from web_search import search as web_search
+from web_search import search as web_search, search_raw as web_search_raw
 from music_recognizer import recognize as recognize_music
 from auth import get_auth_url, exchange_code, is_authenticated
 from google_tools import create_event, search_youtube, search_drive
@@ -577,8 +577,8 @@ async def process_action(update, context, text, result, user_id):
         else:
             query = result.get("query", "")
             title = result.get("title", "Documento Osiris")
-            search_result = web_search(query)
-            content = f"**{query}**\n\n{search_result}" if search_result else "Sin resultados."
+            search_result = web_search_raw(query)
+            content = f"Tema: {query}\n\n{search_result if search_result else 'Sin resultados.'}"
             path = generate_text_pdf(title, content, "informe")
             msg = "PDF generado."
         if path:

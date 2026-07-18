@@ -46,13 +46,13 @@ def _upsert_pattern(c, user_id, ptype, pkey, pvalue, now, conn):
                           confidence = LEAST(learning_patterns.confidence + 0.05, 1.0)
         """, (user_id, ptype, pkey, pvalue, now, now))
     else:
-        c.execute("""
-            INSERT INTO learning_patterns (user_id, pattern_type, pattern_key, pattern_value, frequency, last_observed)
-            VALUES (?, ?, ?, ?, 1, ?)
-            ON CONFLICT(user_id, pattern_type, pattern_key)
-            DO UPDATE SET frequency = frequency + 1, last_observed = ?,
-                          confidence = MIN(confidence + 0.05, 1.0)
-        """, (user_id, ptype, pkey, pvalue, now, now))
+        c.execute("SELECT confidence FROM learning_patterns WHERE user_id=? AND pattern_type=? AND pattern_key=?", (user_id, ptype, pkey))
+        existing = c.fetchone()
+        if existing:
+            new_conf = min(existing[0] + 0.05, 1.0)
+            c.execute("UPDATE learning_patterns SET frequency=frequency+1, last_observed=?, confidence=? WHERE user_id=? AND pattern_type=? AND pattern_key=?", (now, new_conf, user_id, ptype, pkey))
+        else:
+            c.execute("INSERT INTO learning_patterns (user_id, pattern_type, pattern_key, pattern_value, frequency, last_observed) VALUES (?, ?, ?, ?, 1, ?)", (user_id, ptype, pkey, pvalue, now))
     conn.commit()
 
 def get_patterns(user_id, min_confidence=0.3):

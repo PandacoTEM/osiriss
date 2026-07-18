@@ -75,7 +75,17 @@ ACCIONES:
 12. CHAT: {{"action": "chat", "message": "respuesta amigable en español"}}
     Solo para saludos, agradecimientos o conversación casual. NO para preguntas que requieran información actual.
 
-13. ACLARAR (cuando NO entiendas bien): {{"action": "clarify", "message": "pregunta al usuario"}}
+13. GENERAR PDF: {{"action": "generate_pdf", "type": "expenses|content", "query": "descripcion", "title": "titulo del pdf"}}
+    Si el usuario pide un PDF o informe de gastos -> type="expenses"
+    Si pide un PDF con informacion general -> type="content", query="lo que quiere buscar/investigar"
+    Ej: "dame un pdf de mis gastos" -> type="expenses"
+    Ej: "genera un pdf con un resumen de la segunda guerra mundial" -> type="content", query="resumen segunda guerra mundial causas desarrollo consecuencias"
+
+14. APRENDIZAJE / PATRONES: {{"action": "learning_insights"}}
+    El usuario pregunta que has aprendido de el, que patrones has visto, etc.
+    Devuelve los patrones detectados en su comportamiento.
+
+15. ACLARAR (cuando NO entiendas bien): {{"action": "clarify", "message": "pregunta al usuario"}}
     Usa esta acción CUANDO:
     - El mensaje sea confuso, contradictorio o incompleto
     - No sepas si es recordatorio, búsqueda, tarea u otra cosa

@@ -1,6 +1,16 @@
 UPDATES = """
 === ULTIMAS ACTUALIZACIONES DE OSIRIS ===
 
+[17 Jul 2026] - Sistema de aprendizaje
+- Osiris ahora aprende de tus patrones de uso
+- Detecta recordatorios importantes, gastos frecuentes, temas de búsqueda
+- Puedes preguntar: "qué has aprendido de mí?" o "dame tus insights"
+
+[17 Jul 2026] - Generador de PDF
+- "dame un pdf de mis gastos" → reporte de gastos en PDF
+- "dame un pdf con un resumen de la segunda guerra mundial" → investiga y genera PDF
+- Categorías, totales, desglose detallado
+
 [17 Jul 2026] - Webhook seguro con secret token
 - Agregado TELEGRAM_WEBHOOK_SECRET para verificar que las peticiones webhook vienen de Telegram y no de terceros
 

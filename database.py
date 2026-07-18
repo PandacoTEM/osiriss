@@ -106,6 +106,19 @@ def init_db():
                 used INTEGER DEFAULT 0
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS learning_patterns (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                pattern_type TEXT NOT NULL,
+                pattern_key TEXT NOT NULL,
+                pattern_value TEXT NOT NULL,
+                frequency INTEGER DEFAULT 1,
+                last_observed TEXT NOT NULL,
+                    confidence REAL DEFAULT 0.0,
+                UNIQUE(user_id, pattern_type, pattern_key)
+            )
+        """)
     else:
         c.execute("CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, text TEXT NOT NULL, datetime TEXT NOT NULL, recurring TEXT, search_query TEXT, created_at TEXT NOT NULL, active INTEGER DEFAULT 1)")
         for col in ["search_query", "friend_name", "end_date", "lead_minutes INTEGER DEFAULT 0"]:
@@ -121,6 +134,7 @@ def init_db():
         c.execute("CREATE TABLE IF NOT EXISTS user_tokens (user_id INTEGER PRIMARY KEY, token_data TEXT NOT NULL)")
         c.execute("CREATE TABLE IF NOT EXISTS authorized_users (user_id INTEGER PRIMARY KEY)")
         c.execute("CREATE TABLE IF NOT EXISTS auth_codes (code TEXT PRIMARY KEY, created_at TEXT NOT NULL, used INTEGER DEFAULT 0)")
+        c.execute("CREATE TABLE IF NOT EXISTS learning_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, pattern_type TEXT NOT NULL, pattern_key TEXT NOT NULL, pattern_value TEXT NOT NULL, frequency INTEGER DEFAULT 1, last_observed TEXT NOT NULL, confidence REAL DEFAULT 0.0, UNIQUE(user_id, pattern_type, pattern_key))")
     conn.commit()
     conn.close()
 

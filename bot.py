@@ -18,7 +18,8 @@ from music_recognizer import recognize as recognize_music
 from auth import get_auth_url, exchange_code, is_authenticated
 from google_tools import create_event, search_youtube, search_drive
 from dashboard import run_dashboard
-
+from learning import record_action, get_insights
+from pdf_generator import generate_expense_report, generate_text_pdf
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -37,7 +38,7 @@ BOT_USERNAME = "Orisis_diosa_bot"
 CREATOR_ID = int(os.getenv("CREATOR_ID", 0))
 _auth_notified = set()
 
-MEMORY_ACTIONS = {"chat", "clarify", "create", "create_search", "create_friend_reminder", "delete", "create_event", "query"}
+MEMORY_ACTIONS = {"chat", "clarify", "create", "create_search", "create_friend_reminder", "delete", "create_event", "query", "learning_insights", "generate_pdf"}
 
 def save_exchange(user_id, user_msg, bot_response, action):
     if action in MEMORY_ACTIONS:
@@ -564,6 +565,30 @@ async def process_action(update, context, text, result, user_id):
         await update.message.reply_text(msg)
         save_exchange(user_id, text, msg, action)
 
+    elif action == "learning_insights":
+        msg = get_insights(user_id)
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        save_exchange(user_id, text, msg, action)
+
+    elif action == "generate_pdf":
+        ptype = result.get("type", "content")
+        if ptype == "expenses":
+            path, msg = generate_expense_report(user_id, date_filter="all")
+        else:
+            query = result.get("query", "")
+            title = result.get("title", "Documento Osiris")
+            search_result = web_search(query)
+            content = f"**{query}**\n\n{search_result}" if search_result else "Sin resultados."
+            path = generate_text_pdf(title, content, "informe")
+            msg = "PDF generado."
+        if path:
+            with open(path, "rb") as f:
+                await update.message.reply_document(f, filename=os.path.basename(path), caption=msg)
+        else:
+            await update.message.reply_text(msg)
+        log_activity(user_id, "generar_pdf", ptype)
+        save_exchange(user_id, text, f"PDF: {ptype}", action)
+
     elif action == "create_task_list":
         name = result.get("name", "lista")
         list_id = create_task_list(user_id, name)
@@ -727,6 +752,7 @@ async def process_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text:
             save_exchange(user_id, text, msg, "chat")
             continue
         await process_action(update, context, text, act, user_id)
+        record_action(user_id, act.get("action", "unknown"), str(act))
 
 async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id

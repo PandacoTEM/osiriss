@@ -299,6 +299,36 @@ def _record_provider(provider, operation, status):
     except Exception:
         logging.exception("No se pudo registrar el uso de %s", provider)
 
+
+def _get_response_content(response, provider):
+    choices = getattr(response, "choices", None)
+    if not choices:
+        raise ValueError(f"{provider} respondio sin opciones")
+    message = getattr(choices[0], "message", None)
+    content = getattr(message, "content", None)
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError(f"{provider} respondio sin contenido textual")
+    return content
+
+
+def _compact_messages_for_groq(messages):
+    compacted = []
+    for message in messages:
+        item = dict(message)
+        content = item.get("content")
+        if item.get("role") == "system" and isinstance(content, str) and len(content) > 16000:
+            lines = content.splitlines()
+            content = "\n".join(
+                line for line in lines
+                if not line.lstrip().startswith('- "')
+                and "MULTIPLES ACCIONES (ejemplos)" not in line.upper()
+            )
+            if len(content) > 16000:
+                content = content[:16000] + "\n\nDevuelve unicamente JSON valido segun las acciones anteriores."
+            item["content"] = content
+        compacted.append(item)
+    return compacted
+
 def _call_ai(messages, model=None, response_format=None, temperature=0.1, max_tokens=500, operation="chat"):
     or_key = os.getenv("OPENROUTER_API_KEY")
     if or_key:
@@ -318,8 +348,9 @@ def _call_ai(messages, model=None, response_format=None, temperature=0.1, max_to
             if response_format:
                 kwargs["response_format"] = response_format
             response = client.chat.completions.create(**kwargs)
+            content = _get_response_content(response, "OpenRouter")
             _record_provider("openrouter", operation, "ok")
-            return response.choices[0].message.content
+            return content
         except Exception as e:
             _record_provider("openrouter", operation, "error")
             logging.warning(f"OpenRouter fall\u00f3: {e}. Usando Groq.")
@@ -329,13 +360,15 @@ def _call_ai(messages, model=None, response_format=None, temperature=0.1, max_to
         raise RuntimeError("No hay un proveedor de IA configurado")
     client = Groq(api_key=groq_key, timeout=30.0, max_retries=1)
     groq_model = model or "llama-3.1-8b-instant"
-    kwargs = dict(model=groq_model, messages=messages, temperature=temperature, max_tokens=max_tokens)
+    groq_messages = _compact_messages_for_groq(messages)
+    kwargs = dict(model=groq_model, messages=groq_messages, temperature=temperature, max_tokens=max_tokens)
     if response_format:
         kwargs["response_format"] = response_format
     try:
         response = client.chat.completions.create(**kwargs)
+        content = _get_response_content(response, "Groq")
         _record_provider("groq", operation, "ok")
-        return response.choices[0].message.content
+        return content
     except Exception:
         _record_provider("groq", operation, "error")
         raise
@@ -370,6 +403,10 @@ def analyze_message(user_message, history=None, memories=None):
         temperature=0.1,
         max_tokens=500
     )
+
+    if not isinstance(content, str) or not content.strip():
+        logging.warning("AI respondio sin contenido util")
+        return {"action": "chat", "message": "No entendi bien. ¿Puedes repetirlo?"}
 
     try:
         cleaned = content.strip()

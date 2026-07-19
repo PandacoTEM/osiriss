@@ -354,6 +354,62 @@ class ConfigurationRegressionTests(unittest.TestCase):
         )
         self.assertIn("nombre: Yecso", prompt)
 
+    def test_ai_falls_back_when_openrouter_returns_null_content(self):
+        import os
+        import ai_handler
+
+        openrouter_client = Mock()
+        openrouter_client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=None))]
+        )
+        groq_client = Mock()
+        groq_client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"action":"chat","message":"ok"}'))]
+        )
+
+        with (
+            patch.dict(os.environ, {"OPENROUTER_API_KEY": "or-test", "GROQ_API_KEY": "groq-test"}),
+            patch.object(ai_handler, "OpenAI", return_value=openrouter_client),
+            patch.object(ai_handler, "Groq", return_value=groq_client),
+            patch.object(ai_handler, "_record_provider") as record_provider,
+        ):
+            content = ai_handler._call_ai([{"role": "user", "content": "hola"}])
+
+        self.assertEqual(content, '{"action":"chat","message":"ok"}')
+        self.assertEqual(record_provider.call_args_list[0].args, ("openrouter", "chat", "error"))
+        self.assertEqual(record_provider.call_args_list[1].args, ("groq", "chat", "ok"))
+
+    def test_analyze_message_handles_null_content(self):
+        import ai_handler
+
+        with patch.object(ai_handler, "_call_ai", return_value=None):
+            result = ai_handler.analyze_message("recuerdame llamar manana")
+
+        self.assertEqual(result["action"], "chat")
+        self.assertIn("repetirlo", result["message"])
+
+    def test_groq_fallback_compacts_large_system_prompt(self):
+        import ai_handler
+
+        prompt = ai_handler.SYSTEM_PROMPT.format(
+            current_date="2099-01-01",
+            current_time="12:00",
+            timezone="America/Costa_Rica",
+            history="",
+            memories="Sin datos guardados.",
+        )
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": "recuerdame llamar manana"},
+        ]
+
+        compacted = ai_handler._compact_messages_for_groq(messages)
+
+        self.assertLess(len(compacted[0]["content"]), 16001)
+        self.assertLess(len(compacted[0]["content"]), len(prompt))
+        self.assertIn("ACCIONES:", compacted[0]["content"])
+        self.assertEqual(compacted[1], messages[1])
+
 
 class DashboardCoreTests(unittest.TestCase):
     def setUp(self):

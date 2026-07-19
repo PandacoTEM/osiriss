@@ -3,6 +3,8 @@ import re
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 from fpdf import FPDF, XPos, YPos
+from fpdf.enums import MethodReturnValue
+from zoneinfo import ZoneInfo
 from database import get_conn, DATABASE_URL
 
 PDF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pdfs")
@@ -20,6 +22,14 @@ _REPLACE = {
     "\u263a": ":)", "\u2639": ":(", "\u266a": "~",
 }
 _RE_UNICODE = re.compile("|".join(re.escape(k) for k in sorted(_REPLACE, key=len, reverse=True)))
+
+
+def _local_now():
+    timezone_name = os.getenv("TIMEZONE") or os.getenv("TZ") or "America/Costa_Rica"
+    try:
+        return datetime.now(ZoneInfo(timezone_name))
+    except Exception:
+        return datetime.now()
 
 def _sanitize(text):
     """Replace unicode chars not supported by Helvetica with ASCII."""
@@ -43,6 +53,29 @@ def _fit_cell_text(pdf, text, width):
 
 class OsirisPDF(FPDF):
     def header(self):
+        if getattr(self, "report_mode", False):
+            self.set_fill_color(24, 32, 55)
+            self.rect(0, 0, self.w, 47, style="F")
+            self.set_xy(self.l_margin, 8)
+            self.set_font("Helvetica", "B", 8)
+            self.set_text_color(54, 196, 181)
+            self.cell(95, 5, "OSIRIS  /  INFORME DE ACTUALIDAD")
+            self.set_xy(self.w - self.r_margin - 62, 8)
+            self.set_text_color(204, 211, 224)
+            self.cell(62, 5, _sanitize(getattr(self, "report_date", "")), align="R")
+            self.set_xy(self.l_margin, 18)
+            title = _sanitize(getattr(self, "report_title", "Informe Osiris"))
+            self.set_font("Helvetica", "B", 20 if len(title) <= 46 else 16)
+            self.set_text_color(255, 255, 255)
+            self.multi_cell(0, 8, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            subtitle = _sanitize(getattr(self, "report_subtitle", ""))
+            if subtitle:
+                self.set_y(37)
+                self.set_font("Helvetica", "", 8.5)
+                self.set_text_color(204, 211, 224)
+                self.cell(0, 5, _fit_cell_text(self, subtitle, self.w - self.l_margin - self.r_margin))
+            self.set_y(52)
+            return
         self.set_font("Helvetica", "B", 9)
         self.set_text_color(76, 73, 150)
         self.cell(0, 6, "OSIRIS  /  ASISTENTE PERSONAL", align="L")
@@ -52,17 +85,17 @@ class OsirisPDF(FPDF):
 
     def footer(self):
         self.set_y(-16)
-        self.set_draw_color(225, 226, 235)
+        self.set_draw_color(221, 225, 230)
         self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
         self.ln(2)
         self.set_font("Helvetica", "I", 8)
-        self.set_text_color(128, 128, 128)
+        self.set_text_color(116, 122, 135)
         self.cell(0, 8, "Generado por Osiris", align="L")
         self.set_y(-14)
         self.cell(0, 8, f"Página {self.page_no()}/{{nb}}", align="R")
 
 def _filename(prefix):
-    return os.path.join(PDF_DIR, f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+    return os.path.join(PDF_DIR, f"{prefix}_{_local_now().strftime('%Y%m%d_%H%M%S')}.pdf")
 
 def generate_expense_report(user_id, date_filter=None):
     conn = get_conn()
@@ -189,11 +222,146 @@ def _render_text_content(pdf, content):
         pdf.ln(2)
 
 
+def _report_section(pdf, number, title):
+    y = pdf.get_y()
+    pdf.set_fill_color(229, 91, 73)
+    pdf.rect(pdf.l_margin, y, 6, 6, style="F")
+    pdf.set_xy(pdf.l_margin, y)
+    pdf.set_font("Helvetica", "B", 7.5)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(6, 6, str(number), align="C")
+    pdf.set_xy(pdf.l_margin + 9, y)
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.set_text_color(24, 32, 55)
+    pdf.cell(0, 6, _sanitize(title.upper()))
+    pdf.set_y(y + 9)
+
+
+def _report_box(pdf, text, font_size=9.5, line_height=5.2, accent=(54, 196, 181)):
+    value = _sanitize(text)
+    width = pdf.w - pdf.l_margin - pdf.r_margin
+    pdf.set_font("Helvetica", "", font_size)
+    height = float(
+        pdf.multi_cell(
+            width,
+            line_height,
+            value,
+            dry_run=True,
+            output=MethodReturnValue.HEIGHT,
+            padding=(3.5, 4, 3.5, 6),
+        )
+    )
+    if pdf.get_y() + height > pdf.h - 22:
+        pdf.add_page()
+    x, y = pdf.l_margin, pdf.get_y()
+    pdf.set_fill_color(244, 247, 248)
+    pdf.set_text_color(42, 47, 58)
+    pdf.set_x(x)
+    pdf.multi_cell(
+        width,
+        line_height,
+        value,
+        fill=True,
+        padding=(3.5, 4, 3.5, 6),
+        new_x=XPos.LMARGIN,
+        new_y=YPos.NEXT,
+    )
+    pdf.set_fill_color(*accent)
+    pdf.rect(x, y, 2.2, height, style="F")
+    pdf.ln(3)
+
+
+def _render_report_points(pdf, points):
+    width = pdf.w - pdf.l_margin - pdf.r_margin - 10
+    for index, point in enumerate(points[:5], 1):
+        value = _sanitize(point)
+        pdf.set_font("Helvetica", "", 9.2)
+        height = float(
+            pdf.multi_cell(
+                width,
+                5,
+                value,
+                dry_run=True,
+                output=MethodReturnValue.HEIGHT,
+            )
+        )
+        if pdf.get_y() + height + 2 > pdf.h - 22:
+            pdf.add_page()
+        x, y = pdf.l_margin, pdf.get_y()
+        pdf.set_fill_color(18, 137, 131)
+        pdf.ellipse(x, y + 0.4, 5.5, 5.5, style="F")
+        pdf.set_xy(x, y + 0.2)
+        pdf.set_font("Helvetica", "B", 7.2)
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(5.5, 5.5, str(index), align="C")
+        pdf.set_xy(x + 9, y)
+        pdf.set_font("Helvetica", "", 9.2)
+        pdf.set_text_color(42, 47, 58)
+        pdf.multi_cell(width, 5, value, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_y(max(pdf.get_y(), y + height) + 2)
+
+
+def _render_report_sources(pdf, sources):
+    clean_sources = list(sources or [])[:6]
+    if not clean_sources:
+        return
+    rows = (len(clean_sources) + 1) // 2
+    if pdf.get_y() + 9 + rows * 12 > pdf.h - 20:
+        pdf.add_page()
+    _report_section(pdf, "04", "Fuentes consultadas")
+    start_y = pdf.get_y()
+    gap = 8
+    column_width = (pdf.w - pdf.l_margin - pdf.r_margin - gap) / 2
+    for offset, source in enumerate(clean_sources):
+        row, column = divmod(offset, 2)
+        x = pdf.l_margin + column * (column_width + gap)
+        y = start_y + row * 12
+        url = str(source.get("href") or "").strip()
+        domain = urlparse(url).netloc.removeprefix("www.") if url else "Fuente sin enlace"
+        pdf.set_xy(x, y)
+        pdf.set_font("Helvetica", "B", 8.1)
+        pdf.set_text_color(42, 47, 58)
+        title = _fit_cell_text(pdf, f"{offset + 1}. {source.get('title') or 'Fuente'}", column_width)
+        pdf.cell(column_width, 4.5, title, link=url if url.startswith("http") else "")
+        pdf.set_xy(x, y + 5)
+        pdf.set_font("Helvetica", "", 7.6)
+        pdf.set_text_color(18, 137, 131)
+        pdf.cell(column_width, 4, _fit_cell_text(pdf, domain, column_width), link=url if url.startswith("http") else "")
+    pdf.set_y(start_y + rows * 12)
+
+
+def _render_research_report(pdf, report, sources):
+    _report_section(pdf, "01", "En breve")
+    _report_box(pdf, report.get("summary") or "Sin resumen disponible.")
+
+    _report_section(pdf, "02", "Puntos clave")
+    _render_report_points(pdf, report.get("key_points") or [])
+
+    limitations = report.get("limitations")
+    if limitations:
+        _report_section(pdf, "03", "Alcance")
+        _report_box(pdf, limitations, font_size=8.5, line_height=4.6, accent=(229, 91, 73))
+
+    _render_report_sources(pdf, sources)
+
+
 def generate_text_pdf(title, content, prefix="documento", subtitle=None, sources=None):
     pdf = OsirisPDF()
     pdf.alias_nb_pages()
     pdf.set_margins(18, 12, 18)
     pdf.set_auto_page_break(auto=True, margin=22)
+    if isinstance(content, dict):
+        now = _local_now()
+        pdf.report_mode = True
+        pdf.report_title = title
+        pdf.report_subtitle = f"Tema: {subtitle}" if subtitle else "Síntesis preparada por Osiris"
+        pdf.report_date = now.strftime("%d/%m/%Y | %H:%M")
+        pdf.add_page()
+        _render_research_report(pdf, content, sources)
+        path = _filename(prefix)
+        pdf.output(path)
+        return path
+
     pdf.add_page()
     pdf.ln(2)
     pdf.set_font("Helvetica", "B", 21)
@@ -216,7 +384,7 @@ def generate_text_pdf(title, content, prefix="documento", subtitle=None, sources
     pdf.cell(
         0,
         6,
-        _sanitize(f"Actualizado: {datetime.now().strftime('%d/%m/%Y %H:%M')}"),
+        _sanitize(f"Actualizado: {_local_now().strftime('%d/%m/%Y %H:%M')}"),
         align="C",
         new_x=XPos.LMARGIN,
         new_y=YPos.NEXT,

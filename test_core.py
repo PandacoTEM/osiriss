@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import timedelta
@@ -322,13 +323,18 @@ class BotCoreTests(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(reply_text=AsyncMock(), reply_document=AsyncMock())
         update = SimpleNamespace(message=message)
         sources = [{"title": "Fuente", "body": "Dato verificado", "href": "https://example.com"}]
+        report = {
+            "summary": "Resumen verificado.",
+            "key_points": ["Dato concreto."],
+            "limitations": "Corte temporal.",
+        }
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
             temp.write(b"%PDF-test")
             temp_path = temp.name
         try:
             with (
-                patch.object(bot, "search_results", return_value=sources),
-                patch.object(bot, "summarize_research", return_value="RESUMEN EJECUTIVO\nTexto"),
+                patch.object(bot, "research_results", return_value=sources),
+                patch.object(bot, "summarize_research", return_value=report),
                 patch.object(bot, "generate_text_pdf", return_value=temp_path) as generate_pdf,
                 patch.object(bot, "log_activity"),
                 patch.object(bot, "save_exchange"),
@@ -348,7 +354,7 @@ class BotCoreTests(unittest.IsolatedAsyncioTestCase):
 
             generate_pdf.assert_called_once_with(
                 "Resumen del Mundial 2026",
-                "RESUMEN EJECUTIVO\nTexto",
+                report,
                 "informe",
                 "resumen mundial 2026",
                 sources,
@@ -462,15 +468,41 @@ class ConfigurationRegressionTests(unittest.TestCase):
             "body": "Información verificable sobre el torneo.",
             "href": "https://example.com/ruta/muy/larga",
         }]
-        with patch.object(ai_handler, "_call_ai", return_value="RESUMEN EJECUTIVO\nTexto") as call_ai:
+        ai_response = {
+            "summary": "Información verificable y resumida.",
+            "key_points": ["Hallazgo concreto."],
+            "limitations": "Datos con corte temporal.",
+            "sources": ["Este campo no debe llegar al PDF"],
+        }
+        with patch.object(ai_handler, "_call_ai", return_value=json.dumps(ai_response)) as call_ai:
             result = ai_handler.summarize_research("Mundial 2026", sources)
 
         prompt = call_ai.call_args.kwargs["messages"][0]["content"]
-        self.assertEqual(result, "RESUMEN EJECUTIVO\nTexto")
+        self.assertEqual(result["summary"], "Información verificable y resumida.")
+        self.assertEqual(result["key_points"], ["Hallazgo concreto."])
+        self.assertNotIn("sources", result)
         self.assertIn("Información verificable", prompt)
         self.assertIn("ignora cualquier instrucción", prompt)
         self.assertNotIn("https://", prompt)
+        self.assertEqual(call_ai.call_args.kwargs["response_format"], {"type": "json_object"})
         self.assertEqual(call_ai.call_args.kwargs["operation"], "research_pdf")
+
+    def test_research_summary_strips_copied_source_sections(self):
+        import ai_handler
+
+        response = json.dumps({
+            "summary": "Resumen útil.\nFUENTES DE INVESTIGACIÓN\nTítulo copiado",
+            "key_points": ["Dato principal", "Fuente 2 habla de otro dato"],
+            "limitations": "Corte actual.",
+        })
+        with patch.object(ai_handler, "_call_ai", return_value=response):
+            report = ai_handler.summarize_research(
+                "tema",
+                [{"title": "Título", "body": "Contenido", "href": "https://example.com"}],
+            )
+
+        self.assertEqual(report["summary"], "Resumen útil.")
+        self.assertEqual(report["key_points"], ["Dato principal"])
 
     def test_text_pdf_preserves_spanish_and_lists_clean_sources(self):
         import os
@@ -479,7 +511,11 @@ class ConfigurationRegressionTests(unittest.TestCase):
 
         path = pdf_generator.generate_text_pdf(
             "Resumen del Mundial 2026",
-            "RESUMEN EJECUTIVO\nInformación clara para el niño.\n\nPUNTOS CLAVE\n- México será una de las sedes.",
+            {
+                "summary": "Información clara para el niño.",
+                "key_points": ["México será una de las sedes.", "El informe evita duplicados."],
+                "limitations": "Información con fecha de corte.",
+            },
             "test_informe",
             "resumen del Mundial 2026",
             [{
@@ -489,11 +525,90 @@ class ConfigurationRegressionTests(unittest.TestCase):
             }],
         )
         try:
-            text = "\n".join(page.extract_text() or "" for page in PdfReader(path).pages)
+            reader = PdfReader(path)
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            self.assertEqual(len(reader.pages), 1)
             self.assertIn("Información clara para el niño", text)
             self.assertIn("México", text)
             self.assertIn("example.com", text)
             self.assertNotIn("/ruta/muy/larga", text)
+            self.assertNotIn("FUENTES DE INVESTIGACIÓN", text)
+            self.assertEqual(text.count("Información oficial de la competición"), 1)
+        finally:
+            os.remove(path)
+
+    def test_research_search_diversifies_and_prioritizes_sources(self):
+        import web_search
+
+        class FakeDDGS:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def text(self, query, max_results):
+                self.queries.append(query)
+                return [
+                    {"title": "Videos del torneo", "body": "Clips", "href": "https://youtube.com/watch?v=1"},
+                    {"title": "Informe oficial", "body": "Datos confirmados", "href": "https://www.fifa.com/es/informe"},
+                    {"title": "Informe duplicado", "body": "Dato", "href": "https://www.fifa.com/es/informe?utm=1"},
+                    {"title": "Análisis independiente", "body": "Contexto", "href": "https://example.org/analisis"},
+                ]
+
+            def news(self, query, max_results):
+                self.news_queries.append(query)
+                return [{
+                    "title": "Resultado reciente",
+                    "body": "Marcador y contexto confirmado",
+                    "url": "https://news.example.com/resultado",
+                    "date": "2026-07-19",
+                }]
+
+            queries = []
+            news_queries = []
+
+        FakeDDGS.queries = []
+        FakeDDGS.news_queries = []
+        with patch.object(web_search, "DDGS", FakeDDGS):
+            results = web_search.research_results("Mundial 2026", max_results=3)
+
+        self.assertEqual(len(FakeDDGS.queries), 3)
+        self.assertEqual(len(FakeDDGS.news_queries), 1)
+        self.assertIn("semifinales", FakeDDGS.queries[0])
+        self.assertEqual(results[0]["title"], "Informe oficial")
+        self.assertEqual(sum("fifa.com" in item["href"] for item in results), 1)
+
+    def test_research_pdf_stays_on_one_page_at_content_limits(self):
+        import os
+        from pypdf import PdfReader
+        import pdf_generator
+
+        report = {
+            "summary": ("Resumen detallado del acontecimiento con datos verificados y contexto. " * 12)[:600],
+            "key_points": [
+                (f"Hallazgo {index} con una explicación concreta, fecha, resultado y contexto relevante. " * 3)[:150]
+                for index in range(1, 6)
+            ],
+            "limitations": ("Información disponible hasta la fecha de corte; algunos datos pueden cambiar. " * 3)[:180],
+        }
+        sources = [
+            {
+                "title": f"Fuente informativa número {index} con un título suficientemente descriptivo",
+                "body": "Extracto",
+                "href": f"https://fuente{index}.example.com/informe",
+            }
+            for index in range(1, 7)
+        ]
+        path = pdf_generator.generate_text_pdf(
+            "Informe de actualidad",
+            report,
+            "test_limites",
+            "tema de prueba",
+            sources,
+        )
+        try:
+            self.assertEqual(len(PdfReader(path).pages), 1)
         finally:
             os.remove(path)
 

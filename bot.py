@@ -2794,7 +2794,7 @@ def main():
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", WEBHOOK_SECRET):
             raise RuntimeError("TELEGRAM_WEBHOOK_SECRET debe usar solo A-Z, a-z, 0-9, _ y -")
         from dashboard import app as flask_app
-        from flask import request
+        from flask import jsonify, request
         from telegram import Update as TgUpdate
         @flask_app.route("/webhook", methods=["POST"])
         def webhook():
@@ -2834,6 +2834,20 @@ def main():
             except Exception as exc:
                 logging.exception("Fallo completando Google OAuth: %s", exc)
                 return "No se pudo completar la conexion con Google.", 400
+        @flask_app.route("/internal/oauth-diagnostic", methods=["GET"])
+        def oauth_diagnostic():
+            provided_secret = request.headers.get("X-Osiris-Debug", "")
+            if not hmac.compare_digest(provided_secret, WEBHOOK_SECRET):
+                return "Forbidden", 403
+            client_id = os.getenv("GOOGLE_CLIENT_ID", "")
+            client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
+            redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "")
+            return jsonify({
+                "client_id": client_id,
+                "has_client_secret": bool(client_secret),
+                "redirect_uri": redirect_uri,
+                "source": "environment" if client_id and client_secret else "credentials.json",
+            })
         loop.run_until_complete(ptb_app.initialize())
         loop.run_until_complete(post_init(ptb_app))
         loop.run_until_complete(ptb_app.start())

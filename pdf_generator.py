@@ -1,6 +1,7 @@
 import os
 import re
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 from fpdf import FPDF, XPos, YPos
 from database import get_conn, DATABASE_URL
 
@@ -9,11 +10,8 @@ os.makedirs(PDF_DIR, exist_ok=True)
 
 _REPLACE = {
     "\u2014": "-", "\u2013": "-", "\u2018": "'", "\u2019": "'",
-    "\u201c": '"', "\u201d": '"', "\u2026": "...", "\u00e1": "a",
-    "\u00e9": "e", "\u00ed": "i", "\u00f3": "o", "\u00fa": "u",
-    "\u00f1": "n", "\u00c1": "A", "\u00c9": "E", "\u00cd": "I",
-    "\u00d3": "O", "\u00da": "U", "\u00d1": "N", "\u00fc": "u",
-    "\u00dc": "U", "\u00bf": "?", "\u00a1": "!", "\u20ac": "EUR",
+    "\u201c": '"', "\u201d": '"', "\u2026": "...", "\u2022": "-",
+    "\u00a0": " ", "\u20ac": "EUR",
     "\u00a3": "GBP", "\u00a5": "JPY", "\u2660": ".", "\u2663": ".",
     "\u2665": ".", "\u2666": ".", "\u2713": "V", "\u2714": "V",
     "\u2717": "X", "\u2190": "<-", "\u2192": "->", "\u2191": "^",
@@ -45,16 +43,23 @@ def _fit_cell_text(pdf, text, width):
 
 class OsirisPDF(FPDF):
     def header(self):
-        self.set_font("Helvetica", "B", 10)
-        self.set_text_color(100, 100, 180)
-        self.cell(0, 8, "Osiris - Asistente Personal", align="L")
-        self.ln(12)
+        self.set_font("Helvetica", "B", 9)
+        self.set_text_color(76, 73, 150)
+        self.cell(0, 6, "OSIRIS  /  ASISTENTE PERSONAL", align="L")
+        self.set_draw_color(218, 220, 235)
+        self.line(self.l_margin, 18, self.w - self.r_margin, 18)
+        self.ln(10)
 
     def footer(self):
-        self.set_y(-15)
+        self.set_y(-16)
+        self.set_draw_color(225, 226, 235)
+        self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
+        self.ln(2)
         self.set_font("Helvetica", "I", 8)
         self.set_text_color(128, 128, 128)
-        self.cell(0, 10, f"Pagina {self.page_no()}/{{nb}}", align="C")
+        self.cell(0, 8, "Generado por Osiris", align="L")
+        self.set_y(-14)
+        self.cell(0, 8, f"Página {self.page_no()}/{{nb}}", align="R")
 
 def _filename(prefix):
     return os.path.join(PDF_DIR, f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
@@ -149,18 +154,109 @@ def generate_expense_report(user_id, date_filter=None):
     pdf.output(path)
     return path, f"Reporte generado con {len(rows)} gastos."
 
-def generate_text_pdf(title, content, prefix="documento"):
+def _render_text_content(pdf, content):
+    for raw_line in str(content or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            pdf.ln(2)
+            continue
+        heading = line.lstrip("# ").rstrip(":")
+        if line.startswith("#") or (line == line.upper() and len(line) <= 60):
+            pdf.ln(2)
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.set_text_color(47, 48, 92)
+            pdf.multi_cell(0, 7, _sanitize(heading), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.set_draw_color(221, 222, 238)
+            pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+            pdf.ln(3)
+            continue
+        if line.startswith(("- ", "* ")):
+            pdf.set_font("Helvetica", "", 10.5)
+            pdf.set_text_color(38, 38, 45)
+            pdf.set_x(pdf.l_margin + 3)
+            pdf.multi_cell(
+                pdf.w - pdf.l_margin - pdf.r_margin - 3,
+                6,
+                _sanitize(f"- {line[2:].strip()}"),
+                new_x=XPos.LMARGIN,
+                new_y=YPos.NEXT,
+            )
+            pdf.ln(1)
+            continue
+        pdf.set_font("Helvetica", "", 10.5)
+        pdf.set_text_color(38, 38, 45)
+        pdf.multi_cell(0, 6, _sanitize(line), align="L", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.ln(2)
+
+
+def generate_text_pdf(title, content, prefix="documento", subtitle=None, sources=None):
     pdf = OsirisPDF()
     pdf.alias_nb_pages()
+    pdf.set_margins(18, 12, 18)
+    pdf.set_auto_page_break(auto=True, margin=22)
     pdf.add_page()
-    pdf.set_font("Helvetica", "B", 18)
-    pdf.set_text_color(40, 40, 80)
-    pdf.cell(0, 12, _sanitize(title), align="C")
-    pdf.ln(10)
+    pdf.ln(2)
+    pdf.set_font("Helvetica", "B", 21)
+    pdf.set_text_color(37, 38, 83)
+    pdf.multi_cell(0, 10, _sanitize(title), align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    if subtitle:
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.set_text_color(92, 94, 112)
+        pdf.multi_cell(
+            0,
+            6,
+            _sanitize(f"Consulta: {subtitle}"),
+            align="C",
+            new_x=XPos.LMARGIN,
+            new_y=YPos.NEXT,
+        )
+    pdf.set_font("Helvetica", "", 9)
+    pdf.set_text_color(125, 126, 140)
+    pdf.cell(
+        0,
+        6,
+        _sanitize(f"Actualizado: {datetime.now().strftime('%d/%m/%Y %H:%M')}"),
+        align="C",
+        new_x=XPos.LMARGIN,
+        new_y=YPos.NEXT,
+    )
+    pdf.ln(8)
 
-    pdf.set_font("Helvetica", "", 11)
-    pdf.set_text_color(30, 30, 30)
-    pdf.multi_cell(0, 6, _sanitize(content))
+    _render_text_content(pdf, content)
+
+    if sources:
+        pdf.ln(5)
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.set_text_color(47, 48, 92)
+        pdf.cell(0, 8, "Fuentes consultadas", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_draw_color(221, 222, 238)
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+        pdf.ln(4)
+        for index, source in enumerate(sources, 1):
+            title_text = _sanitize(source.get("title") or "Fuente sin título")
+            url = str(source.get("href") or "").strip()
+            domain = urlparse(url).netloc.removeprefix("www.") if url else "Fuente sin enlace"
+            pdf.set_font("Helvetica", "B", 9.5)
+            pdf.set_text_color(45, 45, 55)
+            pdf.multi_cell(
+                0,
+                5.5,
+                _sanitize(f"{index}. {title_text}"),
+                new_x=XPos.LMARGIN,
+                new_y=YPos.NEXT,
+            )
+            pdf.set_font("Helvetica", "", 8.5)
+            pdf.set_text_color(76, 73, 150)
+            pdf.cell(
+                0,
+                5,
+                _sanitize(domain),
+                link=url if url.startswith("http") else "",
+                new_x=XPos.LMARGIN,
+                new_y=YPos.NEXT,
+            )
+            pdf.ln(2)
 
     path = _filename(prefix)
     pdf.output(path)

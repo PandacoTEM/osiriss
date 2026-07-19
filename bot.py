@@ -22,8 +22,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters, ContextTypes
 
 from database import init_db, add_reminder, get_all_active, get_reminders, deactivate_by_id, update_datetime, log_activity, get_today_activity, save_message, get_recent_history, create_task_list, add_task_item, get_task_lists, get_list_items, toggle_task_item, delete_task_list, delete_task_item, search_lists, is_task_list_owner, add_expense, get_today_expenses, authorize_user, deauthorize_user, is_authorized, get_authorized_user_ids, create_auth_code, redeem_auth_code, get_reminder_by_id, search_active_reminders, mark_delivery_attempt, mark_delivered, snooze_reminder, update_reminder_details, create_pending_action, consume_pending_action, remember, get_memories, forget_memory, save_contact, get_contact, get_contacts, delete_contact, delete_user_data, get_conn, DATABASE_URL
-from ai_handler import analyze_message, transcribe_audio, answer_question, answer_from_documents, compose_text, summarize_content, analyze_image, ocr_image, generate_chat_response
-from web_search import search_raw as web_search_raw
+from ai_handler import analyze_message, transcribe_audio, answer_question, answer_from_documents, compose_text, summarize_content, summarize_research, analyze_image, ocr_image, generate_chat_response
+from web_search import search_results
 from music_recognizer import recognize as recognize_music
 from auth import complete_auth, get_auth_url, is_authenticated, revoke_google_access
 from google_tools import create_event, create_gmail_draft, list_events, search_youtube, search_drive
@@ -1606,10 +1606,37 @@ async def process_action(update, context, text, result, user_id, history=None, m
         else:
             query = result.get("query", "")
             title = result.get("title", "Documento Osiris")
-            search_result = await asyncio.to_thread(web_search_raw, query)
-            content = f"Tema: {query}\n\n{search_result if search_result else 'Sin resultados.'}"
-            path = await asyncio.to_thread(generate_text_pdf, title, content, "informe")
-            msg = "PDF generado."
+            sources = await asyncio.to_thread(search_results, query)
+            if not sources:
+                path = None
+                msg = "No encontré fuentes suficientes para generar un informe confiable."
+            else:
+                try:
+                    content = await asyncio.to_thread(summarize_research, query, sources)
+                except Exception as exc:
+                    logging.exception("No se pudo sintetizar el informe PDF: %s", exc)
+                    points = "\n".join(
+                        f"- {source['title']}: {source['body'][:260]}"
+                        for source in sources
+                    )
+                    content = (
+                        "RESUMEN EJECUTIVO\n"
+                        f"Se consultaron {len(sources)} fuentes sobre {query}. "
+                        "La síntesis automática no estuvo disponible, por lo que se presentan "
+                        "los hallazgos principales sin agregar información externa.\n\n"
+                        f"PUNTOS CLAVE\n{points}\n\n"
+                        "CONTEXTO Y LIMITACIONES\n"
+                        "Este informe depende de los extractos públicos disponibles al momento de la consulta."
+                    )
+                path = await asyncio.to_thread(
+                    generate_text_pdf,
+                    title,
+                    content,
+                    "informe",
+                    query,
+                    sources,
+                )
+                msg = f"Resumen en PDF generado con {len(sources)} fuentes."
         if path:
             try:
                 with open(path, "rb") as f:

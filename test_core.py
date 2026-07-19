@@ -315,6 +315,50 @@ class BotCoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("12 USD", reply)
         save_exchange.assert_called_once()
 
+    async def test_research_pdf_summarizes_sources_before_rendering(self):
+        import os
+        import bot
+
+        message = SimpleNamespace(reply_text=AsyncMock(), reply_document=AsyncMock())
+        update = SimpleNamespace(message=message)
+        sources = [{"title": "Fuente", "body": "Dato verificado", "href": "https://example.com"}]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp:
+            temp.write(b"%PDF-test")
+            temp_path = temp.name
+        try:
+            with (
+                patch.object(bot, "search_results", return_value=sources),
+                patch.object(bot, "summarize_research", return_value="RESUMEN EJECUTIVO\nTexto"),
+                patch.object(bot, "generate_text_pdf", return_value=temp_path) as generate_pdf,
+                patch.object(bot, "log_activity"),
+                patch.object(bot, "save_exchange"),
+            ):
+                await bot.process_action(
+                    update,
+                    SimpleNamespace(),
+                    "dame un pdf con un resumen del mundial 2026",
+                    {
+                        "action": "generate_pdf",
+                        "type": "content",
+                        "query": "resumen mundial 2026",
+                        "title": "Resumen del Mundial 2026",
+                    },
+                    7,
+                )
+
+            generate_pdf.assert_called_once_with(
+                "Resumen del Mundial 2026",
+                "RESUMEN EJECUTIVO\nTexto",
+                "informe",
+                "resumen mundial 2026",
+                sources,
+            )
+            message.reply_document.assert_awaited_once()
+            self.assertFalse(os.path.exists(temp_path))
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
 
 class ConfigurationRegressionTests(unittest.TestCase):
     def test_google_oauth_is_scoped_and_not_oob(self):
@@ -409,6 +453,48 @@ class ConfigurationRegressionTests(unittest.TestCase):
         self.assertLess(len(compacted[0]["content"]), len(prompt))
         self.assertIn("ACCIONES:", compacted[0]["content"])
         self.assertEqual(compacted[1], messages[1])
+
+    def test_research_summary_uses_extracts_without_raw_urls(self):
+        import ai_handler
+
+        sources = [{
+            "title": "Fuente de prueba",
+            "body": "Información verificable sobre el torneo.",
+            "href": "https://example.com/ruta/muy/larga",
+        }]
+        with patch.object(ai_handler, "_call_ai", return_value="RESUMEN EJECUTIVO\nTexto") as call_ai:
+            result = ai_handler.summarize_research("Mundial 2026", sources)
+
+        prompt = call_ai.call_args.kwargs["messages"][0]["content"]
+        self.assertEqual(result, "RESUMEN EJECUTIVO\nTexto")
+        self.assertIn("Información verificable", prompt)
+        self.assertNotIn("https://", prompt)
+        self.assertEqual(call_ai.call_args.kwargs["operation"], "research_pdf")
+
+    def test_text_pdf_preserves_spanish_and_lists_clean_sources(self):
+        import os
+        from pypdf import PdfReader
+        import pdf_generator
+
+        path = pdf_generator.generate_text_pdf(
+            "Resumen del Mundial 2026",
+            "RESUMEN EJECUTIVO\nInformación clara para el niño.\n\nPUNTOS CLAVE\n- México será una de las sedes.",
+            "test_informe",
+            "resumen del Mundial 2026",
+            [{
+                "title": "Información oficial de la competición",
+                "body": "Extracto",
+                "href": "https://www.example.com/ruta/muy/larga",
+            }],
+        )
+        try:
+            text = "\n".join(page.extract_text() or "" for page in PdfReader(path).pages)
+            self.assertIn("Información clara para el niño", text)
+            self.assertIn("México", text)
+            self.assertIn("example.com", text)
+            self.assertNotIn("/ruta/muy/larga", text)
+        finally:
+            os.remove(path)
 
 
 class DashboardCoreTests(unittest.TestCase):

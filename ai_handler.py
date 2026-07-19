@@ -329,6 +329,7 @@ def _compact_messages_for_groq(messages):
         compacted.append(item)
     return compacted
 
+
 def _call_ai(messages, model=None, response_format=None, temperature=0.1, max_tokens=500, operation="chat"):
     or_key = os.getenv("OPENROUTER_API_KEY")
     if or_key:
@@ -479,6 +480,36 @@ def summarize_content(content, style="breve"):
         messages=[{"role": "user", "content": prompt}],
         temperature=0.1,
         max_tokens=800,
+    )
+
+
+def summarize_research(query, results):
+    source_text = "\n\n".join(
+        f"FUENTE {index}\nTítulo: {result['title']}\nExtracto: {result['body'][:800]}"
+        for index, result in enumerate(results[:6], 1)
+    )
+    prompt = f"""Redacta un informe breve y objetivo en español sobre: {query}
+
+Usa solamente la información de las fuentes incluidas abajo. No inventes datos ni des por confirmado
+algo que las fuentes no respalden. Si hay información incompleta, contradictoria o temporal, indícalo.
+
+Devuelve texto plano con esta estructura exacta:
+RESUMEN EJECUTIVO
+Dos o tres párrafos claros que respondan directamente a la consulta.
+
+PUNTOS CLAVE
+- Entre cuatro y seis hallazgos concretos.
+
+CONTEXTO Y LIMITACIONES
+Un párrafo corto sobre alcance, fecha o incertidumbres. No incluyas URLs; se agregarán aparte.
+
+FUENTES DE INVESTIGACIÓN:
+{source_text}"""
+    return _call_ai(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+        max_tokens=1000,
+        operation="research_pdf",
     )
 
 

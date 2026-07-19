@@ -34,5 +34,5 @@ def search_raw(query, max_results=5):
             if title and body:
                 lines.append(f"T\u00edtulo: {title}\nContenido: {body[:500]}\nFuente: {href}")
         return "\n\n".join(lines)
-    except Exception as e:
+    except Exception:
         return ""

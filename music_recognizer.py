@@ -16,10 +16,10 @@ def recognize(file_path):
             title = r.get("title", "?")
             artist = r.get("artist", "?")
             album = r.get("album", "?")
-            line = f"\U0001f3b5 *Canci\u00f3n:* {title}\n\U0001f469\u200d\U0001f3a4 *Artista:* {artist}\n\U0001f4bf *\u00c1lbum:* {album}"
+            line = f"\U0001f3b5 Cancion: {title}\n\U0001f469\u200d\U0001f3a4 Artista: {artist}\n\U0001f4bf Album: {album}"
             if r.get("song_link"):
-                line += f"\n\U0001f517 [Escuchar]({r['song_link']})"
+                line += f"\n\U0001f517 Escuchar: {r['song_link']}"
             return line
         return None
-    except Exception as e:
+    except Exception:
         return None

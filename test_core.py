@@ -1,0 +1,390 @@
+import tempfile
+import unittest
+from datetime import timedelta
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
+
+import database
+
+
+ROOT = Path(__file__).resolve().parent
+
+
+class DatabaseCoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.old_url = database.DATABASE_URL
+        self.old_path = database.DB_PATH
+        database.DATABASE_URL = None
+        database.DB_PATH = str(Path(self.temp_dir.name) / "osiris-test.db")
+        database.init_db()
+
+    def tearDown(self):
+        database.DATABASE_URL = self.old_url
+        database.DB_PATH = self.old_path
+        self.temp_dir.cleanup()
+
+    def test_reminder_delivery_and_snooze_lifecycle(self):
+        reminder_id = database.add_reminder(7, "Tomar agua", "2099-01-31 10:00")
+        database.mark_delivery_attempt(reminder_id, "telegram temporal")
+        row = database.get_reminder_by_id(reminder_id, 7)
+        self.assertEqual(row[10], "retrying")
+        self.assertEqual(row[11], 1)
+
+        self.assertTrue(database.snooze_reminder(reminder_id, 7, "2099-01-31 10:10"))
+        row = database.get_reminder_by_id(reminder_id, 7)
+        self.assertEqual(row[3], "2099-01-31 10:10")
+        self.assertEqual(row[10], "pending")
+        self.assertEqual(row[11], 0)
+
+        database.mark_delivered(reminder_id)
+        self.assertEqual(database.get_reminder_by_id(reminder_id, 7)[10], "sent")
+
+    def test_memory_confirmation_and_contacts(self):
+        import features
+
+        database.remember(7, "medico", "Dra. Vargas")
+        self.assertEqual(database.get_memories(7, "Vargas")[0][1], "Dra. Vargas")
+
+        token = database.create_pending_action(7, "record_expense", {"amount": 25})
+        action, payload = database.consume_pending_action(token, 7)
+        self.assertEqual(action, "record_expense")
+        self.assertEqual(payload["amount"], 25)
+        self.assertIsNone(database.consume_pending_action(token, 7))
+
+        database.save_contact(7, "Dani", 99)
+        features.set_preference(7, "voice_replies", True)
+        features.add_document(7, "privado.txt", "txt", None, "dato temporal")
+        self.assertEqual(database.get_contact(7, "dani"), ("Dani", 99))
+
+        exported = database.export_user_data(7)
+        self.assertEqual(exported["memories"][0][1], "Dra. Vargas")
+        self.assertEqual(exported["contacts"][0][0], "Dani")
+
+        database.delete_user_data(7)
+        self.assertEqual(database.get_memories(7), [])
+        self.assertEqual(database.get_contacts(7), [])
+        self.assertEqual(features.get_preferences(7), {})
+        self.assertEqual(features.list_documents(7), [])
+
+    def test_expense_pdf_supports_multiple_currencies(self):
+        import pdf_generator
+
+        database.add_expense(7, 5000, "Supermercado", "comida", "CRC")
+        database.add_expense(7, 12, "Hosting", "servicios", "USD")
+        with patch.object(pdf_generator, "PDF_DIR", self.temp_dir.name):
+            path, message = pdf_generator.generate_expense_report(7, "all")
+
+        pdf_path = Path(path)
+        self.assertTrue(pdf_path.exists())
+        self.assertTrue(pdf_path.read_bytes().startswith(b"%PDF"))
+        self.assertIn("2 gastos", message)
+
+    def test_weekly_pdf_combines_activity_finance_habits_and_goals(self):
+        import features
+        import pdf_generator
+
+        database.add_expense(7, 1500, "Cafe", "comida", "CRC")
+        database.log_activity(7, "crear_recordatorio", "Prueba")
+        features.create_habit(7, "Caminar")
+        features.log_habit(7, "Caminar")
+        features.create_goal(7, "Meta semanal")
+        with patch.object(pdf_generator, "PDF_DIR", self.temp_dir.name):
+            path, message = pdf_generator.generate_weekly_report(7)
+        self.assertTrue(Path(path).read_bytes().startswith(b"%PDF"))
+        self.assertIn("semanal", message.lower())
+
+    def test_preferences_flags_history_and_undo(self):
+        import features
+
+        features.set_preference(7, "private_mode", True)
+        self.assertTrue(features.get_preference(7, "private_mode"))
+        features.set_feature_flag(7, "documents", False)
+        self.assertFalse(features.feature_enabled(7, "documents"))
+        self.assertTrue(features.feature_enabled(7, "inbox"))
+
+        item_id = features.add_inbox_item(7, "Idea reversible", "ideas")
+        self.assertEqual(features.get_inbox(7)[0][0], item_id)
+        self.assertEqual(features.undo_last_action(7), "capture_inbox")
+        self.assertEqual(features.get_inbox(7), [])
+
+    def test_planning_routines_habits_goals_and_dates(self):
+        import features
+
+        routine_id = features.create_routine(7, "manana", ["Tomar agua", "Revisar agenda"])
+        routine = features.get_routine(7, "manana")
+        self.assertEqual(routine[0], routine_id)
+        self.assertEqual(len(routine[2]), 2)
+
+        features.create_habit(7, "Leer", "daily", 1)
+        self.assertIsNotNone(features.log_habit(7, "Leer"))
+        self.assertEqual(features.get_habits(7)[0][4], 1)
+
+        goal_id = features.create_goal(7, "Aprender Python", steps=["Curso", "Proyecto"])
+        self.assertEqual(features.get_goals(7)[0][0], goal_id)
+        self.assertEqual(features.get_goals(7)[0][5], 2)
+
+        event_date = (database.local_now() + timedelta(days=3)).strftime("%Y-%m-%d")
+        features.add_important_date(7, "Fecha de prueba", event_date, recurring=False)
+        self.assertEqual(features.get_upcoming_dates(7, 7)[0][-1], 3)
+
+    def test_document_library_chunks_searches_and_deletes(self):
+        import features
+
+        content = ("Osiris conserva el conocimiento importante. " * 80).strip()
+        document_id, created = features.add_document(
+            7, "manual.txt", "txt", "telegram-file-id", content
+        )
+        self.assertTrue(created)
+        self.assertGreater(len(features.list_documents(7)), 0)
+        matches = features.search_documents(7, "conocimiento importante")
+        self.assertEqual(matches[0][0], "manual.txt")
+        duplicate_id, duplicate_created = features.add_document(
+            7, "manual-copia.txt", "txt", "otro-file-id", content
+        )
+        self.assertEqual(duplicate_id, document_id)
+        self.assertFalse(duplicate_created)
+        self.assertTrue(features.delete_document(7, document_id))
+        self.assertEqual(features.list_documents(7), [])
+
+    def test_budgets_duplicates_subscriptions_and_expense_items(self):
+        import features
+
+        features.set_budget(7, "comida", "CRC", 10000, 80)
+        expense_id = database.add_expense(7, 8500, "Super", "comida", "CRC")
+        features.add_expense_items(
+            expense_id,
+            [{"description": "Arroz", "quantity": 2, "unit_price": 1000, "total": 2000}],
+        )
+        status = features.get_budget_status(7)[0]
+        self.assertEqual(status[4], 8500)
+        self.assertIsNotNone(features.find_duplicate_expense(7, 8500, "Super", "CRC"))
+
+        subscription_id = features.add_subscription(
+            7, "Servicio", 10, "USD", "2027-01-31", "monthly"
+        )
+        self.assertEqual(features.advance_subscription(7, subscription_id), "2027-02-28")
+        self.assertEqual(features.get_subscriptions(7)[0][0], subscription_id)
+        self.assertIn("current", features.get_monthly_expense_comparison(7))
+        self.assertEqual(len(features.get_expense_export_rows(7)), 1)
+
+    def test_shared_task_lists_are_visible_to_member(self):
+        import features
+
+        list_id = database.create_task_list(7, "Compras compartidas")
+        database.add_task_item(list_id, "Leche")
+        features.share_resource(7, "task_list", list_id, 99, "edit")
+        self.assertEqual(database.search_lists(99, "Compras")[0][0], list_id)
+        shared = features.get_shared_resources(99)
+        self.assertEqual(shared[0][2], list_id)
+        self.assertFalse(database.is_task_list_owner(99, list_id))
+
+    def test_meeting_minutes_provider_usage_and_cache(self):
+        import features
+
+        meeting_id = features.start_meeting(7, "Proyecto Osiris")
+        self.assertEqual(features.get_active_meeting(7)[0], meeting_id)
+        self.assertIsNotNone(features.add_meeting_item(7, "Publicar beta", "decision"))
+        ended = features.end_meeting(7)
+        self.assertEqual(ended[0], meeting_id)
+        self.assertEqual(ended[2][0][0], "decision")
+        self.assertIsNone(features.get_active_meeting(7))
+        self.assertEqual(features.set_meeting_summary(7, meeting_id, "Minuta final"), 1)
+
+        features.record_provider_usage("groq", "test", "ok", 7)
+        features.cache_response("public-search:test", "respuesta", ttl_minutes=5)
+        self.assertEqual(features.get_cached_response("public-search:test"), "respuesta")
+
+    def test_encrypted_backup_restores_relations_atomically(self):
+        import os
+        import backup_tools
+        import features
+
+        list_id = database.create_task_list(7, "Respaldo")
+        database.add_task_item(list_id, "Elemento original")
+        features.add_document(7, "notas.txt", "txt", None, "contenido importante")
+        features.create_habit(7, "Respirar")
+        with patch.dict(os.environ, {"OSIRIS_BACKUP_KEY": "clave-de-prueba-segura"}):
+            blob, filename, count = backup_tools.create_encrypted_backup(7)
+            self.assertTrue(blob.startswith(backup_tools.BACKUP_HEADER))
+            self.assertTrue(filename.endswith(".osirisbackup"))
+            self.assertGreater(count, 0)
+            payload = backup_tools.decrypt_backup(blob, 7)
+            with self.assertRaises(ValueError):
+                backup_tools.decrypt_backup(blob, 99)
+
+            database.add_task_item(list_id, "No debe sobrevivir")
+            restored = backup_tools.restore_backup_payload(payload, 7)
+
+        self.assertGreater(restored, 0)
+        restored_lists = database.search_lists(7, "Respaldo")
+        self.assertEqual(len(restored_lists), 1)
+        restored_items = database.get_list_items(restored_lists[0][0])
+        self.assertEqual([row[1] for row in restored_items], ["Elemento original"])
+        self.assertEqual(features.list_documents(7)[0][1], "notas.txt")
+        self.assertEqual(features.get_habits(7)[0][1], "Respirar")
+
+    def test_google_revocation_removes_local_token(self):
+        import os
+        import auth
+
+        with patch.dict(os.environ, {"GOOGLE_TOKEN_ENCRYPTION_KEY": "clave-google-prueba"}):
+            token = auth._encrypt_token('{"token":"access","refresh_token":"refresh"}')
+            database.save_token(7, token)
+            response = SimpleNamespace(status_code=200)
+            with patch.object(auth.requests, "post", return_value=response) as post:
+                existed, remote = auth.revoke_google_access(7)
+        self.assertTrue(existed)
+        self.assertTrue(remote)
+        self.assertIsNone(database.get_token(7))
+        post.assert_called_once()
+
+
+class BotCoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_delivery_is_retried(self):
+        import bot
+
+        fake_job_queue = SimpleNamespace(run_once=Mock())
+        context = SimpleNamespace(
+            job=SimpleNamespace(data={
+                "rid": 5,
+                "uid": 7,
+                "text": "Prueba",
+                "recurring": None,
+                "dt_str": "2099-01-01 10:00",
+                "search_query": None,
+                "friend_name": None,
+                "end_date": None,
+                "lead_minutes": 0,
+                "attempts": 0,
+            }),
+            bot=SimpleNamespace(send_message=AsyncMock(side_effect=RuntimeError("temporal"))),
+            job_queue=fake_job_queue,
+        )
+        reminder_row = (5, 7, "Prueba", "2099-01-01 10:00", None, None, None, None, 0, 1, "pending", 0)
+        with patch.object(bot, "get_reminder_by_id", return_value=reminder_row), patch.object(bot, "mark_delivery_attempt") as mark_attempt:
+            await bot.send_reminder(context)
+        mark_attempt.assert_called_once()
+        fake_job_queue.run_once.assert_called_once()
+
+    def test_monthly_recurrence_clamps_to_last_day(self):
+        import bot
+
+        current = bot.parse_local("2027-01-31 09:00")
+        self.assertEqual(bot.calc_next(current, "monthly").strftime("%Y-%m-%d"), "2027-02-28")
+
+    def test_conversation_context_is_explicit(self):
+        import inspect
+        import bot
+
+        parameters = inspect.signature(bot.process_action).parameters
+        self.assertIn("history", parameters)
+        self.assertIn("memories", parameters)
+
+    def test_amount_parser_supports_local_formats(self):
+        import bot
+
+        self.assertEqual(bot.parse_amount("12.500,00"), 12500.0)
+        self.assertEqual(bot.parse_amount("12,500.00"), 12500.0)
+        self.assertEqual(bot.parse_amount("12,500"), 12500.0)
+
+    async def test_expense_summary_handles_multiple_currencies(self):
+        import bot
+
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(message=message)
+        expenses = [
+            (5000.0, "super_mercado", "comida", "CRC"),
+            (12.0, "hosting [mensual]", "servicios", "USD"),
+        ]
+        with (
+            patch.object(bot, "get_today_expenses", return_value=expenses),
+            patch.object(bot, "save_exchange") as save_exchange,
+        ):
+            await bot.process_action(
+                update,
+                SimpleNamespace(),
+                "cuanto gaste hoy",
+                {"action": "expense_summary"},
+                7,
+            )
+
+        reply = message.reply_text.await_args.args[0]
+        self.assertIn("5000 CRC", reply)
+        self.assertIn("12 USD", reply)
+        save_exchange.assert_called_once()
+
+
+class ConfigurationRegressionTests(unittest.TestCase):
+    def test_google_oauth_is_scoped_and_not_oob(self):
+        source = (ROOT / "auth.py").read_text(encoding="utf-8")
+        self.assertNotIn("urn:ietf:wg:oauth:2.0:oob", source)
+        self.assertNotIn("save_token(0", source)
+        self.assertNotIn("get_token(0", source)
+        self.assertIn("save_token(user_id", source)
+        self.assertIn("gmail.compose", source)
+
+    def test_google_tokens_are_encrypted(self):
+        import os
+        import auth
+
+        with patch.dict(os.environ, {"GOOGLE_TOKEN_ENCRYPTION_KEY": "prueba-segura"}):
+            encrypted = auth._encrypt_token('{"token":"secreto"}')
+            self.assertTrue(encrypted.startswith("enc:"))
+            self.assertNotIn("secreto", encrypted)
+            self.assertEqual(auth._decrypt_token(encrypted), '{"token":"secreto"}')
+
+    def test_free_router_and_production_initialization(self):
+        ai_source = (ROOT / "ai_handler.py").read_text(encoding="utf-8")
+        bot_source = (ROOT / "bot.py").read_text(encoding="utf-8")
+        self.assertIn('"openrouter/free"', ai_source)
+        self.assertIn("loop.run_until_complete(post_init(ptb_app))", bot_source)
+        self.assertIn('context.user_data.pop("music_pending", False)', bot_source)
+
+    def test_ai_prompt_formats_with_memory(self):
+        import ai_handler
+
+        prompt = ai_handler.SYSTEM_PROMPT.format(
+            current_date="2099-01-01",
+            current_time="12:00",
+            timezone="America/Costa_Rica",
+            history="",
+            memories="- nombre: Yecso",
+        )
+        self.assertIn("nombre: Yecso", prompt)
+
+
+class DashboardCoreTests(unittest.TestCase):
+    def setUp(self):
+        import dashboard
+
+        self.dashboard = dashboard
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.old_url = database.DATABASE_URL
+        self.old_path = database.DB_PATH
+        self.old_password = dashboard.PASSWORD
+        database.DATABASE_URL = None
+        database.DB_PATH = str(Path(self.temp_dir.name) / "dashboard-test.db")
+        dashboard.DATABASE_URL = None
+        dashboard.PASSWORD = "test-password"
+        dashboard.app.config.update(TESTING=True, SESSION_COOKIE_SECURE=False)
+        database.init_db()
+        self.client = dashboard.app.test_client()
+
+    def tearDown(self):
+        database.DATABASE_URL = self.old_url
+        database.DB_PATH = self.old_path
+        self.dashboard.PASSWORD = self.old_password
+        self.temp_dir.cleanup()
+
+    def test_health_and_session_login(self):
+        self.assertEqual(self.client.get("/health").status_code, 200)
+        self.assertEqual(self.client.get("/").status_code, 302)
+        response = self.client.post("/login", data={"password": "test-password"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.client.get("/").status_code, 200)
+
+
+if __name__ == "__main__":
+    unittest.main()

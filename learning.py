@@ -1,7 +1,5 @@
 import json
-import logging
-from datetime import datetime
-from database import get_conn, DATABASE_URL
+from database import get_conn, now_str, DATABASE_URL
 
 def _placeholders(n):
     return "%s" if DATABASE_URL else "?"
@@ -9,28 +7,25 @@ def _placeholders(n):
 def record_action(user_id, action_type, details=""):
     conn = get_conn()
     c = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    if action_type == "crear_recordatorio":
-        if "lead_minutes" in details:
-            minutes = details.split("lead_minutes=")
-            if len(minutes) > 1:
-                try:
-                    lead = int(minutes[1].split()[0])
-                    if lead >= 120:
-                        _upsert_pattern(c, user_id, "prioridad_alta", "lead>=120", str(lead), now, conn)
-                    elif lead >= 60:
-                        _upsert_pattern(c, user_id, "prioridad_media", "lead>=60", str(lead), now, conn)
-                except ValueError:
-                    pass
-    elif action_type in ("registrar_gasto", "record_expense"):
+    now = now_str()
+    if isinstance(details, dict):
+        data = details
+    else:
         try:
-            data = json.loads(details) if details.startswith("{") else {}
-            if isinstance(data, dict):
-                cat = data.get("category", "otros")
-                _upsert_pattern(c, user_id, "gasto_categoria", cat, cat, now, conn)
-        except (json.JSONDecodeError, AttributeError):
-            pass
-    elif action_type == "crear_evento":
+            data = json.loads(details) if details else {}
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+
+    if action_type in ("create", "create_search", "create_friend_reminder", "crear_recordatorio"):
+        lead = int(data.get("lead_minutes") or 0)
+        if lead >= 120:
+            _upsert_pattern(c, user_id, "prioridad_alta", "lead>=120", str(lead), now, conn)
+        elif lead >= 60:
+            _upsert_pattern(c, user_id, "prioridad_media", "lead>=60", str(lead), now, conn)
+    elif action_type in ("registrar_gasto", "record_expense"):
+        cat = data.get("category") or "otros"
+        _upsert_pattern(c, user_id, "gasto_categoria", cat, cat, now, conn)
+    elif action_type in ("crear_evento", "create_event"):
         _upsert_pattern(c, user_id, "evento", "creado", "1", now, conn)
     elif action_type in ("buscar_internet", "search"):
         _upsert_pattern(c, user_id, "busqueda", "internet", "1", now, conn)

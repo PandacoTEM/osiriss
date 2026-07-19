@@ -15,3 +15,5 @@ generate_docs.py
 OSIRIS_BOT_DOCUMENTACION.pdf
 documentacion_privada/
 .tools/
+.runtime/
+tmp/

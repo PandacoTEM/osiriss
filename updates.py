@@ -1,6 +1,29 @@
 UPDATES = """
 === ULTIMAS ACTUALIZACIONES DE OSIRIS ===
 
+[18 Jul 2026] - Nucleo confiable y memoria personal
+- Recordatorios recuperados despues de reinicios, estados de entrega y reintentos
+- Botones para posponer, completar y cancelar series
+- Eliminaciones y gastos OCR con confirmacion
+- Memoria estructurada, contactos de Telegram, exportacion y borrado de datos
+- Google OAuth con callback HTTPS y acceso exclusivo del creador
+- openrouter/free como IA principal, Groq como respaldo
+- AudD solo se usa cuando se solicita identificar una cancion
+
+[18 Jul 2026] - Osiris asistente personal completo
+- Bandeja de entrada, modo privado, memoria temporal y deshacer acciones
+- Rutinas, habitos, metas, fechas importantes y plan diario configurable
+- Resumen matutino por hora, resumen nocturno y reporte semanal PDF
+- Biblioteca de PDF, DOCX, TXT, Markdown, CSV, imagenes y audios
+- Consulta con referencias a fragmentos de documentos personales
+- Presupuestos, suscripciones, duplicados, productos OCR y CSV para Excel
+- Respuestas de voz, resumenes largos, borradores y borradores de Gmail
+- Listas compartidas, compromisos con confirmacion y minutas de reunion
+- Sugerencias proactivas sin ejecutar acciones automaticamente
+- Router OpenRouter/Groq con metricas y cache solo para busquedas publicas
+- Respaldos cifrados restaurables, desconexion de Google y /estado
+- Autodiagnostico periodico de base de datos y programador de recordatorios
+
 [17 Jul 2026] - Sistema de aprendizaje
 - Osiris ahora aprende de tus patrones de uso
 - Detecta recordatorios importantes, gastos frecuentes, temas de búsqueda

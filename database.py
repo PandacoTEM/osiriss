@@ -1,13 +1,25 @@
 import os
-from datetime import datetime
+import json
+import secrets
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reminders.db")
 DATABASE_URL = os.getenv("DATABASE_URL")
+TIMEZONE = os.getenv("TIMEZONE") or os.getenv("TZ") or "America/Costa_Rica"
+
+
+def local_now():
+    return datetime.now(ZoneInfo(TIMEZONE))
+
+
+def now_str():
+    return local_now().strftime("%Y-%m-%d %H:%M")
 
 def get_conn():
     if DATABASE_URL:
         import psycopg2
-        return psycopg2.connect(DATABASE_URL)
+        return psycopg2.connect(DATABASE_URL, connect_timeout=5)
     import sqlite3
     return sqlite3.connect(DB_PATH)
 
@@ -37,6 +49,11 @@ def init_db():
                 friend_name TEXT,
                 end_date TEXT,
                 lead_minutes INTEGER DEFAULT 0,
+                delivery_status TEXT DEFAULT 'pending',
+                delivery_attempts INTEGER DEFAULT 0,
+                last_error TEXT,
+                delivered_at TEXT,
+                updated_at TEXT,
                 active INTEGER DEFAULT 1
             )
         """)
@@ -119,9 +136,57 @@ def init_db():
                 UNIQUE(user_id, pattern_type, pattern_key)
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                memory_key TEXT NOT NULL,
+                memory_value TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, memory_key)
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS pending_actions (
+                token TEXT PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                action_type TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS contacts (
+                id SERIAL PRIMARY KEY,
+                owner_user_id BIGINT NOT NULL,
+                name TEXT NOT NULL,
+                telegram_user_id BIGINT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(owner_user_id, name)
+            )
+        """)
+        for statement in (
+            "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS delivery_status TEXT DEFAULT 'pending'",
+            "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS delivery_attempts INTEGER DEFAULT 0",
+            "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS last_error TEXT",
+            "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS delivered_at TEXT",
+            "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS updated_at TEXT",
+        ):
+            c.execute(statement)
     else:
         c.execute("CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, text TEXT NOT NULL, datetime TEXT NOT NULL, recurring TEXT, search_query TEXT, created_at TEXT NOT NULL, active INTEGER DEFAULT 1)")
-        for col in ["search_query", "friend_name", "end_date", "lead_minutes INTEGER DEFAULT 0"]:
+        for col in [
+            "search_query",
+            "friend_name",
+            "end_date",
+            "lead_minutes INTEGER DEFAULT 0",
+            "delivery_status TEXT DEFAULT 'pending'",
+            "delivery_attempts INTEGER DEFAULT 0",
+            "last_error TEXT",
+            "delivered_at TEXT",
+            "updated_at TEXT",
+        ]:
             try:
                 c.execute(f"ALTER TABLE reminders ADD COLUMN {col}")
             except Exception:
@@ -135,13 +200,18 @@ def init_db():
         c.execute("CREATE TABLE IF NOT EXISTS authorized_users (user_id INTEGER PRIMARY KEY)")
         c.execute("CREATE TABLE IF NOT EXISTS auth_codes (code TEXT PRIMARY KEY, created_at TEXT NOT NULL, used INTEGER DEFAULT 0)")
         c.execute("CREATE TABLE IF NOT EXISTS learning_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, pattern_type TEXT NOT NULL, pattern_key TEXT NOT NULL, pattern_value TEXT NOT NULL, frequency INTEGER DEFAULT 1, last_observed TEXT NOT NULL, confidence REAL DEFAULT 0.0, UNIQUE(user_id, pattern_type, pattern_key))")
+        c.execute("CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, memory_key TEXT NOT NULL, memory_value TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(user_id, memory_key))")
+        c.execute("CREATE TABLE IF NOT EXISTS pending_actions (token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, action_type TEXT NOT NULL, payload TEXT NOT NULL, expires_at TEXT NOT NULL)")
+        c.execute("CREATE TABLE IF NOT EXISTS contacts (id INTEGER PRIMARY KEY AUTOINCREMENT, owner_user_id INTEGER NOT NULL, name TEXT NOT NULL, telegram_user_id INTEGER NOT NULL, created_at TEXT NOT NULL, UNIQUE(owner_user_id, name))")
     conn.commit()
     conn.close()
+    from features import init_feature_schema
+    init_feature_schema()
 
 def add_reminder(user_id, text, dt, recurring=None, search_query=None, friend_name=None, end_date=None, lead_minutes=0):
     conn = get_conn()
     c = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = now_str()
     if DATABASE_URL:
         c.execute("INSERT INTO reminders (user_id, text, datetime, recurring, search_query, created_at, friend_name, end_date, lead_minutes) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                   (user_id, text, dt, recurring, search_query, now, friend_name, end_date, lead_minutes))
@@ -165,11 +235,11 @@ def get_reminders(user_id, date_filter=None):
     conn = get_conn()
     c = conn.cursor()
     if date_filter == "today":
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = local_now().strftime("%Y-%m-%d")
         c.execute(f"SELECT id, text, datetime, recurring FROM reminders WHERE user_id = {_placeholders(1)} AND active = 1 AND datetime LIKE {_placeholders(2)} ORDER BY datetime", (user_id, f"{today}%"))
     elif date_filter == "tomorrow":
         from datetime import timedelta
-        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        tomorrow = (local_now() + timedelta(days=1)).strftime("%Y-%m-%d")
         c.execute(f"SELECT id, text, datetime, recurring FROM reminders WHERE user_id = {_placeholders(1)} AND active = 1 AND datetime LIKE {_placeholders(2)} ORDER BY datetime", (user_id, f"{tomorrow}%"))
     elif date_filter and date_filter != "all":
         c.execute(f"SELECT id, text, datetime, recurring FROM reminders WHERE user_id = {_placeholders(1)} AND active = 1 AND datetime LIKE {_placeholders(2)} ORDER BY datetime", (user_id, f"{date_filter}%"))
@@ -179,10 +249,16 @@ def get_reminders(user_id, date_filter=None):
     conn.close()
     return rows
 
-def deactivate_by_id(reminder_id):
+def deactivate_by_id(reminder_id, user_id=None):
     conn = get_conn()
     c = conn.cursor()
-    c.execute(f"UPDATE reminders SET active = 0 WHERE id = {_placeholders(1)}", (reminder_id,))
+    if user_id is None:
+        c.execute(f"UPDATE reminders SET active = 0, updated_at = {_placeholders(2)} WHERE id = {_placeholders(1)}", (reminder_id, now_str()))
+    else:
+        c.execute(
+            f"UPDATE reminders SET active = 0, updated_at = {_placeholders(3)} WHERE id = {_placeholders(1)} AND user_id = {_placeholders(2)}",
+            (reminder_id, user_id, now_str()),
+        )
     conn.commit()
     conn.close()
 
@@ -198,7 +274,10 @@ def deactivate_by_text(user_id, text_search):
 def update_datetime(reminder_id, new_dt):
     conn = get_conn()
     c = conn.cursor()
-    c.execute(f"UPDATE reminders SET datetime = {_placeholders(1)} WHERE id = {_placeholders(2)}", (new_dt, reminder_id))
+    c.execute(
+        f"UPDATE reminders SET datetime = {_placeholders(1)}, delivery_status = 'pending', delivery_attempts = 0, last_error = NULL, updated_at = {_placeholders(3)} WHERE id = {_placeholders(2)}",
+        (new_dt, reminder_id, now_str()),
+    )
     conn.commit()
     conn.close()
 
@@ -206,14 +285,14 @@ def log_activity(user_id, action, details=None):
     conn = get_conn()
     c = conn.cursor()
     c.execute(f"INSERT INTO activity_log (user_id, action, details, timestamp) VALUES ({_placeholders(1)}, {_placeholders(2)}, {_placeholders(3)}, {_placeholders(4)})",
-              (user_id, action, details, datetime.now().strftime("%Y-%m-%d %H:%M")))
+              (user_id, action, details, now_str()))
     conn.commit()
     conn.close()
 
 def get_today_activity(user_id):
     conn = get_conn()
     c = conn.cursor()
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = local_now().strftime("%Y-%m-%d")
     c.execute(f"SELECT action, details, timestamp FROM activity_log WHERE user_id = {_placeholders(1)} AND timestamp LIKE {_placeholders(2)} ORDER BY timestamp",
               (user_id, f"{today}%"))
     rows = c.fetchall()
@@ -224,7 +303,11 @@ def save_message(user_id, role, content):
     conn = get_conn()
     c = conn.cursor()
     c.execute(f"INSERT INTO chat_history (user_id, role, content, timestamp) VALUES ({_placeholders(1)}, {_placeholders(2)}, {_placeholders(3)}, {_placeholders(4)})",
-              (user_id, role, content, datetime.now().strftime("%Y-%m-%d %H:%M")))
+              (user_id, role, content, now_str()))
+    c.execute(
+        f"DELETE FROM chat_history WHERE user_id = {_placeholders(1)} AND id NOT IN (SELECT id FROM chat_history WHERE user_id = {_placeholders(2)} ORDER BY id DESC LIMIT 200)",
+        (user_id, user_id),
+    )
     conn.commit()
     conn.close()
 
@@ -241,7 +324,7 @@ def get_recent_history(user_id, limit=6):
 def create_task_list(user_id, name):
     conn = get_conn()
     c = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = now_str()
     if DATABASE_URL:
         c.execute("INSERT INTO task_lists (user_id, name, created_at) VALUES (%s, %s, %s) RETURNING id", (user_id, name, now))
     else:
@@ -254,7 +337,7 @@ def create_task_list(user_id, name):
 def add_task_item(list_id, text, priority=0, tags=None):
     conn = get_conn()
     c = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = now_str()
     if DATABASE_URL:
         c.execute("INSERT INTO task_items (list_id, text, completed, priority, tags, created_at) VALUES (%s, %s, 0, %s, %s, %s) RETURNING id",
                   (list_id, text, priority, tags, now))
@@ -269,7 +352,14 @@ def add_task_item(list_id, text, priority=0, tags=None):
 def get_task_lists(user_id):
     conn = get_conn()
     c = conn.cursor()
-    c.execute(f"SELECT id, name, created_at FROM task_lists WHERE user_id = {_placeholders(1)} ORDER BY id DESC", (user_id,))
+    p = _placeholders(1)
+    c.execute(
+        f"""SELECT DISTINCT l.id, l.name, l.created_at FROM task_lists l
+            LEFT JOIN shares s ON s.resource_type='task_list' AND s.resource_id=l.id
+            WHERE l.user_id={p} OR s.member_user_id={p}
+            ORDER BY l.id DESC""",
+        (user_id, user_id),
+    )
     rows = c.fetchall()
     conn.close()
     return rows
@@ -322,15 +412,34 @@ def find_list_by_name(user_id, name):
 def search_lists(user_id, query):
     conn = get_conn()
     c = conn.cursor()
-    c.execute(f"SELECT id, name FROM task_lists WHERE user_id = {_placeholders(1)} AND LOWER(name) LIKE LOWER({_placeholders(2)}) ORDER BY id DESC", (user_id, f"%{query}%"))
+    p = _placeholders(1)
+    c.execute(
+        f"""SELECT DISTINCT l.id, l.name FROM task_lists l
+            LEFT JOIN shares s ON s.resource_type='task_list' AND s.resource_id=l.id
+            WHERE (l.user_id={p} OR s.member_user_id={p})
+              AND LOWER(l.name) LIKE LOWER({p}) ORDER BY l.id DESC""",
+        (user_id, user_id, f"%{query}%"),
+    )
     rows = c.fetchall()
     conn.close()
     return rows
 
+
+def is_task_list_owner(user_id, list_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        f"SELECT 1 FROM task_lists WHERE id={_placeholders(1)} AND user_id={_placeholders(2)}",
+        (list_id, user_id),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row is not None
+
 def add_expense(user_id, amount, description=None, category=None, currency="CRC"):
     conn = get_conn()
     c = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = now_str()
     if DATABASE_URL:
         c.execute("INSERT INTO expenses (user_id, amount, description, category, currency, created_at) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
                   (user_id, amount, description, category, currency, now))
@@ -345,7 +454,7 @@ def add_expense(user_id, amount, description=None, category=None, currency="CRC"
 def get_today_expenses(user_id):
     conn = get_conn()
     c = conn.cursor()
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = local_now().strftime("%Y-%m-%d")
     c.execute(f"SELECT amount, description, category, currency FROM expenses WHERE user_id = {_placeholders(1)} AND created_at LIKE {_placeholders(2)} ORDER BY id", (user_id, f"{today}%"))
     rows = c.fetchall()
     conn.close()
@@ -382,6 +491,16 @@ def get_token(user_id):
     conn.close()
     return row[0] if row else None
 
+
+def delete_token(user_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(f"DELETE FROM user_tokens WHERE user_id = {_placeholders(1)}", (user_id,))
+    conn.commit()
+    changed = c.rowcount
+    conn.close()
+    return changed
+
 def authorize_user(user_id):
     conn = get_conn()
     c = conn.cursor()
@@ -407,11 +526,18 @@ def is_authorized(user_id):
     conn.close()
     return row is not None
 
-import secrets
+
+def get_authorized_user_ids():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM authorized_users")
+    rows = [row[0] for row in c.fetchall()]
+    conn.close()
+    return rows
 
 def create_auth_code():
     code = secrets.token_hex(4).upper()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = now_str()
     conn = get_conn()
     c = conn.cursor()
     c.execute(f"INSERT INTO auth_codes (code, created_at, used) VALUES ({_placeholders(1)}, {_placeholders(2)}, 0)", (code, now))
@@ -433,7 +559,7 @@ def redeem_auth_code(code, user_id):
         return "usado"
     from datetime import timedelta
     created = datetime.strptime(row[1], "%Y-%m-%d %H:%M")
-    if datetime.now() - created > timedelta(hours=24):
+    if local_now().replace(tzinfo=None) - created > timedelta(hours=24):
         conn.close()
         return "expirado"
     c.execute(f"UPDATE auth_codes SET used = 1 WHERE code = {_placeholders(1)}", (code,))
@@ -441,3 +567,300 @@ def redeem_auth_code(code, user_id):
     conn.close()
     authorize_user(user_id)
     return "ok"
+
+
+def get_reminder_by_id(reminder_id, user_id=None):
+    conn = get_conn()
+    c = conn.cursor()
+    sql = "SELECT id, user_id, text, datetime, recurring, search_query, friend_name, end_date, lead_minutes, active, delivery_status, delivery_attempts FROM reminders WHERE id = " + _placeholders(1)
+    params = [reminder_id]
+    if user_id is not None:
+        sql += " AND user_id = " + _placeholders(2)
+        params.append(user_id)
+    c.execute(sql, tuple(params))
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def search_active_reminders(user_id, text_search, limit=5):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        f"SELECT id, text, datetime, recurring FROM reminders WHERE user_id = {_placeholders(1)} AND active = 1 AND LOWER(text) LIKE LOWER({_placeholders(2)}) ORDER BY datetime LIMIT {_placeholders(3)}",
+        (user_id, f"%{text_search}%", limit),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def mark_delivery_attempt(reminder_id, error, final=False):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        f"UPDATE reminders SET delivery_status = {_placeholders(1)}, delivery_attempts = COALESCE(delivery_attempts, 0) + 1, last_error = {_placeholders(2)}, updated_at = {_placeholders(3)} WHERE id = {_placeholders(4)}",
+        ("failed" if final else "retrying", str(error)[:500], now_str(), reminder_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def mark_delivered(reminder_id):
+    conn = get_conn()
+    c = conn.cursor()
+    now = now_str()
+    c.execute(
+        f"UPDATE reminders SET delivery_status = 'sent', delivered_at = {_placeholders(1)}, last_error = NULL, updated_at = {_placeholders(2)} WHERE id = {_placeholders(3)}",
+        (now, now, reminder_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def snooze_reminder(reminder_id, user_id, new_datetime):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        f"UPDATE reminders SET datetime = {_placeholders(1)}, active = 1, delivery_status = 'pending', delivery_attempts = 0, last_error = NULL, updated_at = {_placeholders(2)} WHERE id = {_placeholders(3)} AND user_id = {_placeholders(4)}",
+        (new_datetime, now_str(), reminder_id, user_id),
+    )
+    conn.commit()
+    changed = c.rowcount
+    conn.close()
+    return changed > 0
+
+
+def update_reminder_details(reminder_id, user_id, text=None, dt=None, recurring=None, end_date=None, lead_minutes=None):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        f"UPDATE reminders SET text = COALESCE({_placeholders(1)}, text), datetime = COALESCE({_placeholders(2)}, datetime), recurring = COALESCE({_placeholders(3)}, recurring), end_date = COALESCE({_placeholders(4)}, end_date), lead_minutes = COALESCE({_placeholders(5)}, lead_minutes), delivery_status = 'pending', delivery_attempts = 0, last_error = NULL, updated_at = {_placeholders(6)} WHERE id = {_placeholders(7)} AND user_id = {_placeholders(8)} AND active = 1",
+        (text, dt, recurring, end_date, lead_minutes, now_str(), reminder_id, user_id),
+    )
+    conn.commit()
+    changed = c.rowcount
+    conn.close()
+    return changed > 0
+
+
+def create_pending_action(user_id, action_type, payload, ttl_minutes=15):
+    token = secrets.token_urlsafe(8)
+    expires = (local_now() + timedelta(minutes=ttl_minutes)).isoformat()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        f"INSERT INTO pending_actions (token, user_id, action_type, payload, expires_at) VALUES ({_placeholders(1)}, {_placeholders(2)}, {_placeholders(3)}, {_placeholders(4)}, {_placeholders(5)})",
+        (token, user_id, action_type, json.dumps(payload, ensure_ascii=False), expires),
+    )
+    conn.commit()
+    conn.close()
+    return token
+
+
+def consume_pending_action(token, user_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        f"SELECT action_type, payload, expires_at FROM pending_actions WHERE token = {_placeholders(1)} AND user_id = {_placeholders(2)}",
+        (token, user_id),
+    )
+    row = c.fetchone()
+    c.execute(f"DELETE FROM pending_actions WHERE token = {_placeholders(1)}", (token,))
+    conn.commit()
+    conn.close()
+    if not row or datetime.fromisoformat(row[2]) < local_now():
+        return None
+    return row[0], json.loads(row[1])
+
+
+def remember(user_id, key, value, ttl_days=None, sensitive=False):
+    now = now_str()
+    expires_at = None
+    if ttl_days:
+        expires_at = (local_now() + timedelta(days=int(ttl_days))).strftime("%Y-%m-%d %H:%M")
+    conn = get_conn()
+    c = conn.cursor()
+    if DATABASE_URL:
+        c.execute(
+            """INSERT INTO memories
+               (user_id, memory_key, memory_value, created_at, updated_at, expires_at, sensitive)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (user_id, memory_key)
+               DO UPDATE SET memory_value=EXCLUDED.memory_value, updated_at=EXCLUDED.updated_at,
+                             expires_at=EXCLUDED.expires_at, sensitive=EXCLUDED.sensitive
+               RETURNING id""",
+            (user_id, key, value, now, now, expires_at, int(bool(sensitive))),
+        )
+        memory_id = c.fetchone()[0]
+    else:
+        c.execute(
+            """INSERT INTO memories
+               (user_id, memory_key, memory_value, created_at, updated_at, expires_at, sensitive)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, memory_key)
+               DO UPDATE SET memory_value=excluded.memory_value, updated_at=excluded.updated_at,
+                             expires_at=excluded.expires_at, sensitive=excluded.sensitive""",
+            (user_id, key, value, now, now, expires_at, int(bool(sensitive))),
+        )
+        c.execute("SELECT id FROM memories WHERE user_id=? AND memory_key=?", (user_id, key))
+        memory_id = c.fetchone()[0]
+    conn.commit()
+    conn.close()
+    return memory_id
+
+
+def get_memories(user_id, query=None, limit=20):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        f"DELETE FROM memories WHERE user_id={_placeholders(1)} AND expires_at IS NOT NULL AND expires_at < {_placeholders(2)}",
+        (user_id, now_str()),
+    )
+    if query:
+        c.execute(
+            f"""SELECT memory_key, memory_value, updated_at FROM memories
+                WHERE user_id={_placeholders(1)}
+                  AND (expires_at IS NULL OR expires_at >= {_placeholders(2)})
+                  AND (LOWER(memory_key) LIKE LOWER({_placeholders(3)})
+                       OR LOWER(memory_value) LIKE LOWER({_placeholders(4)}))
+                ORDER BY updated_at DESC LIMIT {_placeholders(5)}""",
+            (user_id, now_str(), f"%{query}%", f"%{query}%", limit),
+        )
+    else:
+        c.execute(
+            f"""SELECT memory_key, memory_value, updated_at FROM memories
+                WHERE user_id={_placeholders(1)}
+                  AND (expires_at IS NULL OR expires_at >= {_placeholders(2)})
+                ORDER BY updated_at DESC LIMIT {_placeholders(3)}""",
+            (user_id, now_str(), limit),
+        )
+    rows = c.fetchall()
+    conn.commit()
+    conn.close()
+    return rows
+
+
+def forget_memory(user_id, query):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        f"DELETE FROM memories WHERE user_id = {_placeholders(1)} AND (LOWER(memory_key) LIKE LOWER({_placeholders(2)}) OR LOWER(memory_value) LIKE LOWER({_placeholders(3)}))",
+        (user_id, f"%{query}%", f"%{query}%"),
+    )
+    conn.commit()
+    changed = c.rowcount
+    conn.close()
+    return changed
+
+
+def save_contact(owner_user_id, name, telegram_user_id):
+    conn = get_conn()
+    c = conn.cursor()
+    if DATABASE_URL:
+        c.execute(
+            "INSERT INTO contacts (owner_user_id, name, telegram_user_id, created_at) VALUES (%s, %s, %s, %s) ON CONFLICT (owner_user_id, name) DO UPDATE SET telegram_user_id = EXCLUDED.telegram_user_id",
+            (owner_user_id, name, telegram_user_id, now_str()),
+        )
+    else:
+        c.execute(
+            "INSERT INTO contacts (owner_user_id, name, telegram_user_id, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(owner_user_id, name) DO UPDATE SET telegram_user_id = excluded.telegram_user_id",
+            (owner_user_id, name, telegram_user_id, now_str()),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_contact(owner_user_id, name):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        f"SELECT name, telegram_user_id FROM contacts WHERE owner_user_id = {_placeholders(1)} AND LOWER(name) = LOWER({_placeholders(2)})",
+        (owner_user_id, name),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def get_contacts(owner_user_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        f"SELECT name, telegram_user_id FROM contacts WHERE owner_user_id = {_placeholders(1)} ORDER BY LOWER(name)",
+        (owner_user_id,),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def delete_contact(owner_user_id, name):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        f"DELETE FROM contacts WHERE owner_user_id = {_placeholders(1)} AND LOWER(name) = LOWER({_placeholders(2)})",
+        (owner_user_id, name),
+    )
+    conn.commit()
+    changed = c.rowcount
+    conn.close()
+    return changed
+
+
+def export_user_data(user_id):
+    conn = get_conn()
+    c = conn.cursor()
+    exports = {
+        "reminders": "SELECT text, datetime, recurring, search_query, friend_name, end_date, lead_minutes, active, delivery_status FROM reminders WHERE user_id = " + _placeholders(1),
+        "expenses": "SELECT amount, description, category, currency, created_at FROM expenses WHERE user_id = " + _placeholders(1),
+        "activity": "SELECT action, details, timestamp FROM activity_log WHERE user_id = " + _placeholders(1),
+        "chat_history": "SELECT role, content, timestamp FROM chat_history WHERE user_id = " + _placeholders(1),
+        "task_lists": "SELECT id, name, created_at FROM task_lists WHERE user_id = " + _placeholders(1),
+        "memories": "SELECT memory_key, memory_value, updated_at FROM memories WHERE user_id = " + _placeholders(1),
+        "contacts": "SELECT name, telegram_user_id, created_at FROM contacts WHERE owner_user_id = " + _placeholders(1),
+    }
+    data = {}
+    for name, sql in exports.items():
+        c.execute(sql, (user_id,))
+        data[name] = [list(row) for row in c.fetchall()]
+    list_ids = [row[0] for row in data["task_lists"]]
+    if list_ids:
+        placeholders = ", ".join([_placeholders(1)] * len(list_ids))
+        c.execute(f"SELECT list_id, text, completed, priority, tags, created_at FROM task_items WHERE list_id IN ({placeholders})", tuple(list_ids))
+        data["task_items"] = [list(row) for row in c.fetchall()]
+    else:
+        data["task_items"] = []
+    conn.close()
+    return data
+
+
+def delete_user_data(user_id, remove_authorization=False):
+    conn = get_conn()
+    c = conn.cursor()
+    p = _placeholders(1)
+    c.execute(f"DELETE FROM shares WHERE owner_user_id={p} OR member_user_id={p}", (user_id, user_id))
+    c.execute(f"DELETE FROM meeting_items WHERE meeting_id IN (SELECT id FROM meetings WHERE user_id={p})", (user_id,))
+    c.execute(f"DELETE FROM document_chunks WHERE user_id={p}", (user_id,))
+    c.execute(f"DELETE FROM goal_steps WHERE goal_id IN (SELECT id FROM goals WHERE user_id={p})", (user_id,))
+    c.execute(f"DELETE FROM habit_logs WHERE user_id={p}", (user_id,))
+    c.execute(f"DELETE FROM routine_steps WHERE routine_id IN (SELECT id FROM routines WHERE user_id={p})", (user_id,))
+    c.execute(f"DELETE FROM expense_items WHERE expense_id IN (SELECT id FROM expenses WHERE user_id={p})", (user_id,))
+    c.execute(
+        f"DELETE FROM task_items WHERE list_id IN (SELECT id FROM task_lists WHERE user_id = {p})",
+        (user_id,),
+    )
+    for table in (
+        "action_history", "inbox_items", "routines", "habits", "goals",
+        "important_dates", "documents", "budgets", "subscriptions", "meetings",
+        "provider_usage", "backups", "user_preferences", "feature_flags",
+        "task_lists", "reminders", "expenses", "activity_log", "chat_history",
+        "learning_patterns", "memories", "user_tokens",
+    ):
+        c.execute(f"DELETE FROM {table} WHERE user_id = {p}", (user_id,))
+    c.execute(f"DELETE FROM contacts WHERE owner_user_id = {p}", (user_id,))
+    c.execute(f"DELETE FROM pending_actions WHERE user_id = {p}", (user_id,))
+    if remove_authorization:
+        c.execute(f"DELETE FROM authorized_users WHERE user_id = {p}", (user_id,))
+    conn.commit()
+    conn.close()

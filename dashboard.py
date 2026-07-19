@@ -6,11 +6,11 @@ from flask import Flask, request, render_template_string, redirect, session
 
 load_dotenv()
 
-from database import deactivate_by_id, get_task_lists, get_list_items, toggle_task_item, delete_task_item, get_conn, DATABASE_URL
+from database import init_db, deactivate_by_id, get_task_lists, get_list_items, toggle_task_item, delete_task_item, get_conn, DATABASE_URL
 
 app = Flask(__name__)
 PASSWORD = os.getenv("DASHBOARD_PASSWORD")
-app.secret_key = os.getenv("DASHBOARD_SESSION_SECRET") or secrets.token_bytes(32)
+app.secret_key = os.getenv("DASHBOARD_SESSION_SECRET") or os.getenv("TELEGRAM_WEBHOOK_SECRET") or secrets.token_bytes(32)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Strict",
@@ -70,7 +70,7 @@ h1 { color: #c0c0ff; font-weight: 300; }
 <div class="table-responsive">
 <table class="table table-sm mb-0">
 <thead><tr>
-<th>ID</th><th>Usuario</th><th>Texto</th><th>Fecha</th><th>Recurrencia</th><th>Estado</th><th>Acci\u00f3n</th>
+<th>ID</th><th>Usuario</th><th>Texto</th><th>Fecha</th><th>Recurrencia</th><th>Estado</th><th>Entrega</th><th>Acci\u00f3n</th>
 </tr></thead>
 <tbody>
 {% for r in reminders %}
@@ -81,6 +81,7 @@ h1 { color: #c0c0ff; font-weight: 300; }
 <td>{{ r.datetime }}</td>
 <td>{% if r.recurring %}<span class="badge badge-recurring">{{ r.recurring }}</span>{% else %}<span class="badge badge-once">\u00fanica</span>{% endif %}</td>
 <td>{% if r.active %}<span class="badge badge-active">activo</span>{% else %}<span class="badge badge-inactive">inactivo</span>{% endif %}</td>
+<td>{{ r.delivery_status or 'pending' }}{% if r.delivery_attempts %} ({{ r.delivery_attempts }}){% endif %}</td>
 <td>
 <a href="/edit/{{ r.id }}" class="btn btn-outline-light btn-sm">\u270f\ufe0f</a>
 <form method="POST" action="/delete/{{ r.id }}" class="d-inline" onsubmit="return confirm('\u00bfEliminar?')">
@@ -247,7 +248,15 @@ def logout():
 
 @app.route("/health")
 def health():
-    return "OK", 200
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT 1")
+        c.fetchone()
+        conn.close()
+        return {"status": "ok", "database": "ok"}, 200
+    except Exception:
+        return {"status": "degraded", "database": "error"}, 503
 
 @app.route("/")
 def index():
@@ -277,8 +286,8 @@ def index():
         )
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT id, user_id, text, datetime, recurring, active FROM reminders ORDER BY datetime DESC LIMIT 100")
-    rows = [dict(id=r[0], user_id=r[1], text=r[2], datetime=r[3], recurring=r[4], active=r[5]) for r in c.fetchall()]
+    c.execute("SELECT id, user_id, text, datetime, recurring, active, delivery_status, delivery_attempts FROM reminders ORDER BY datetime DESC LIMIT 100")
+    rows = [dict(id=r[0], user_id=r[1], text=r[2], datetime=r[3], recurring=r[4], active=r[5], delivery_status=r[6], delivery_attempts=r[7]) for r in c.fetchall()]
     conn.close()
     if f == "active":
         rows = [r for r in rows if r["active"]]
@@ -331,7 +340,7 @@ def edit(rid):
         recurring = request.form.get("recurring") or None
         conn = get_conn()
         c = conn.cursor()
-        c.execute("UPDATE reminders SET text=%s, datetime=%s, recurring=%s WHERE id=%s" if DATABASE_URL else "UPDATE reminders SET text=?, datetime=?, recurring=? WHERE id=?", (text, dt, recurring, rid))
+        c.execute("UPDATE reminders SET text=%s, datetime=%s, recurring=%s, delivery_status='pending', delivery_attempts=0, last_error=NULL WHERE id=%s" if DATABASE_URL else "UPDATE reminders SET text=?, datetime=?, recurring=?, delivery_status='pending', delivery_attempts=0, last_error=NULL WHERE id=?", (text, dt, recurring, rid))
         conn.commit()
         conn.close()
         return redirect("/")
@@ -347,5 +356,6 @@ def delete(rid):
     return redirect("/")
 
 def run_dashboard():
+    init_db()
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)

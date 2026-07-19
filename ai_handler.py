@@ -1,20 +1,26 @@
 import os
 import json
 import logging
+import hashlib
 from datetime import datetime
 from openai import OpenAI
 from groq import Groq
 from web_search import search_raw
 from updates import UPDATES
+from features import cache_response, get_cached_response, record_provider_usage
 
 SYSTEM_PROMPT = """Eres Osiris, un asistente de recordatorios personal.
 Analiza el mensaje del usuario y responde SOLO con un JSON válido.
 
 Hoy es {current_date}. La hora actual es {current_time}. Zona horaria: {timezone}
 Cuando el usuario diga "en X minutos/horas", calcula la hora futura sumando a la hora actual.
+Las fechas de los ejemplos son solo de formato y pueden estar en el pasado. NUNCA las copies: calcula siempre desde la fecha y hora actuales.
 Si tu respuesta incluye mensajes de chat, dirígete al usuario como "jefe".
 
 {history}
+
+Memoria personal disponible:
+{memories}
 
 PUEDES DEVOLVER MÚLTIPLES ACCIONES. Si el usuario pide varias cosas (ej: "apunta todo esto", "varios recordatorios"), usa:
 {{"actions": [{{"action": "create", ...}}, {{"action": "create", ...}}]}}
@@ -64,6 +70,9 @@ ACCIONES:
 8. CREAR EVENTO CALENDARIO: {{"action": "create_event", "summary": "...", "datetime": "YYYY-MM-DD HH:MM", "duration": 60}}
    El usuario quiere agendar algo en Google Calendar.
 
+8B. CONSULTAR CALENDARIO: {{"action": "list_calendar", "date": "YYYY-MM-DD"}}
+   El usuario pregunta que eventos tiene hoy, manana o en una fecha concreta.
+
 9. BUSCAR YOUTUBE: {{"action": "search_youtube", "query": "..."}}
    El usuario quiere encontrar un video en YouTube.
 
@@ -71,6 +80,10 @@ ACCIONES:
    El usuario quiere encontrar un archivo en Google Drive.
 
 11. ELIMINAR recordatorio: {{"action": "delete", "text": "texto a buscar"}}
+
+11B. CAMBIAR recordatorio existente: {{"action": "update_reminder", "target": "texto actual a buscar", "new_text": null, "datetime": null, "recurring": null, "until": null, "lead_minutes": null}}
+    Usa esta accion para "muevelo a las 5", "cambia el recordatorio del dentista al viernes" o "renombra X".
+    Usa el historial reciente para completar target cuando el usuario diga "ese recordatorio".
 
 12. CHAT: {{"action": "chat", "message": "respuesta amigable en español"}}
     Solo para saludos, agradecimientos o conversación casual. NO para preguntas que requieran información actual.
@@ -119,7 +132,8 @@ ACCIONES:
     El usuario quiere extraer texto de una foto (factura, flyer, documento, pizarra, etc).
     Responde pidiendo que envíe la foto.
 
-20. REGISTRAR GASTO: {{"action": "record_expense", "amount": 455, "description": "galletas", "category": "comida"}}
+20. REGISTRAR GASTO: {{"action": "record_expense", "amount": 455, "description": "galletas", "category": "comida", "currency": "CRC", "items": []}}
+    Detecta CRC/colones, USD/dolares o EUR/euros. Si no se indica moneda, usa CRC.
 
 21. RESUMEN DE GASTOS: {{"action": "expense_summary"}}
     El usuario quiere saber cuánto ha gastado hoy o en general.
@@ -137,6 +151,78 @@ ACCIONES:
     - "salud": farmacia, doctor, medicina
     - "hogar": artículos para la casa, muebles
     - "otros": cualquier otra cosa
+
+23. RECORDAR DATO PERSONAL: {{"action": "remember_fact", "key": "dato corto", "value": "informacion a recordar"}}
+    Usa esta accion cuando el usuario diga explicitamente "recuerda que...", "guarda que..." o "mi X es...".
+
+24. CONSULTAR MEMORIA: {{"action": "recall_memory", "query": "tema opcional"}}
+    Usa esta accion para preguntas como "que recuerdas de mi?" o "como se llama mi medico?".
+
+25. OLVIDAR DATO: {{"action": "forget_memory", "query": "dato a olvidar"}}
+    Solo cuando el usuario pida explicitamente olvidar o borrar un dato personal.
+
+26. GUARDAR CONTACTO TELEGRAM: {{"action": "save_contact", "name": "Dani", "telegram_user_id": 123456789}}
+    El usuario debe proporcionar un ID numerico de Telegram.
+
+27. LISTAR CONTACTOS: {{"action": "list_contacts"}}
+
+28. ELIMINAR CONTACTO: {{"action": "delete_contact", "name": "Dani"}}
+
+29. CAPTURAR EN BANDEJA: {{"action": "capture_inbox", "content": "...", "category": "inbox|ideas|trabajo|personal|finanzas|salud", "item_type": "note|link|idea", "private": false}}
+    Para "anota esto", "guarda esta idea", "manda esto a mi bandeja" sin fecha de recordatorio.
+
+30. LISTAR BANDEJA: {{"action": "list_inbox", "category": null}}
+31. ARCHIVAR BANDEJA: {{"action": "archive_inbox", "id": 12}}
+32. DESHACER: {{"action": "undo"}}
+33. MODO PRIVADO: {{"action": "set_private_mode", "enabled": true}}
+    enabled=false cuando el usuario pida salir o desactivar el modo privado.
+
+Para memoria temporal, remember_fact puede incluir "ttl_days": 30.
+Para datos sensibles puede incluir "sensitive": true.
+
+34. CREAR RUTINA: {{"action": "create_routine", "name": "manana", "steps": [{{"type": "task", "content": "Tomar agua"}}, {{"type": "task", "content": "Revisar agenda"}}]}}
+35. LISTAR RUTINAS: {{"action": "list_routines"}}
+36. EJECUTAR RUTINA: {{"action": "run_routine", "name": "manana"}}
+37. CREAR HABITO: {{"action": "create_habit", "name": "Leer 20 minutos", "frequency": "daily", "target_count": 1}}
+38. REGISTRAR HABITO: {{"action": "log_habit", "name": "Leer 20 minutos", "value": 1, "note": null}}
+39. LISTAR HABITOS: {{"action": "list_habits"}}
+40. CREAR META: {{"action": "create_goal", "title": "Ahorrar para viaje", "target_date": "YYYY-MM-DD", "steps": ["Definir presupuesto", "Ahorrar cada mes"]}}
+41. LISTAR METAS: {{"action": "list_goals"}}
+42. FECHA IMPORTANTE: {{"action": "add_important_date", "title": "Cumpleanos de Ana", "date": "YYYY-MM-DD", "recurring": true, "lead_days": 7}}
+43. LISTAR FECHAS IMPORTANTES: {{"action": "list_important_dates", "days": 60}}
+44. PLANIFICAR EL DIA: {{"action": "plan_day"}}
+45. CONFIGURAR RESUMENES: {{"action": "configure_briefing", "morning_summary": true, "evening_summary": true, "weekly_pdf": true, "morning_hour": 6}}
+    Incluye solo las claves que el usuario quiera cambiar.
+46. RESUMEN SEMANAL PDF: {{"action": "weekly_summary_pdf"}}
+47. LISTAR DOCUMENTOS: {{"action": "list_documents"}}
+48. PREGUNTAR A DOCUMENTOS: {{"action": "query_documents", "query": "pregunta concreta"}}
+    Para "segun mis documentos", "busca en el PDF que te envie" o preguntas sobre archivos guardados.
+49. ELIMINAR DOCUMENTO: {{"action": "delete_document", "id": 12}}
+50. GUARDAR PROXIMO AUDIO COMO DOCUMENTO: {{"action": "capture_audio_document"}}
+51. GUARDAR PROXIMA IMAGEN COMO DOCUMENTO: {{"action": "capture_image_document"}}
+52. CONFIGURAR PRESUPUESTO: {{"action": "set_budget", "category": "comida", "currency": "CRC", "monthly_limit": 100000, "alert_percent": 80}}
+53. LISTAR PRESUPUESTOS: {{"action": "list_budgets"}}
+54. AGREGAR SUSCRIPCION: {{"action": "add_subscription", "name": "Netflix", "amount": 12, "currency": "USD", "next_due": "YYYY-MM-DD", "frequency": "monthly", "category": "ocio"}}
+55. LISTAR SUSCRIPCIONES: {{"action": "list_subscriptions"}}
+56. MARCAR SUSCRIPCION PAGADA: {{"action": "mark_subscription_paid", "id": 3}}
+57. COMPARAR GASTOS: {{"action": "expense_comparison"}}
+58. EXPORTAR GASTOS A EXCEL/CSV: {{"action": "export_expenses_csv"}}
+59. ACTIVAR RESPUESTAS DE VOZ: {{"action": "set_voice_replies", "enabled": true}}
+60. RESUMIR TEXTO LARGO: {{"action": "summarize_text", "content": "texto", "style": "breve|ejecutivo|detallado"}}
+61. RESUMIR PROXIMO AUDIO: {{"action": "summarize_next_audio"}}
+62. REDACTAR MENSAJE: {{"action": "draft_message", "instructions": "que debe comunicar", "tone": "formal|casual|profesional"}}
+63. CREAR BORRADOR GMAIL: {{"action": "create_gmail_draft", "to": "correo@ejemplo.com", "subject": "asunto", "body": "contenido", "tone": "formal"}}
+    Crea solo un borrador. Nunca afirmes que el correo fue enviado.
+64. COMPARTIR LISTA: {{"action": "share_task_list", "list": "compras", "contact": "Dani", "permission": "edit"}}
+65. LISTAR COMPARTIDOS: {{"action": "list_shared"}}
+66. PROPONER COMPROMISO: {{"action": "propose_commitment", "text": "Enviar informe", "datetime": "YYYY-MM-DD HH:MM", "lead_minutes": 30}}
+    Usala cuando el usuario mencione una promesa o compromiso futuro sin pedir directamente un recordatorio,
+    por ejemplo "quede en enviarle el informe manana". Osiris pedira confirmacion antes de crearlo.
+67. INICIAR REUNION: {{"action": "start_meeting", "title": "Reunion de proyecto"}}
+68. ANOTAR EN REUNION: {{"action": "add_meeting_note", "content": "...", "item_type": "note|decision|task", "assignee": null, "due_date": null}}
+69. TERMINAR REUNION: {{"action": "end_meeting"}}
+70. SUGERENCIAS PROACTIVAS: {{"action": "proactive_insights"}}
+    Informa riesgos o pendientes. Nunca crea, elimina, paga ni envia nada sin confirmacion.
 
 Ejemplos:
 - "recuérdame llamar al dentista mañana a las 3pm" -> {{"action": "create", "text": "Llamar al dentista", "datetime": "2026-07-15 15:00", "recurring": null}}
@@ -206,16 +292,25 @@ def _get_tz():
     from tzlocal import get_localzone
     return get_localzone()
 
-def _call_ai(messages, model=None, response_format=None, temperature=0.1, max_tokens=500):
+
+def _record_provider(provider, operation, status):
+    try:
+        record_provider_usage(provider, operation, status)
+    except Exception:
+        logging.exception("No se pudo registrar el uso de %s", provider)
+
+def _call_ai(messages, model=None, response_format=None, temperature=0.1, max_tokens=500, operation="chat"):
     or_key = os.getenv("OPENROUTER_API_KEY")
     if or_key:
         try:
             client = OpenAI(
                 api_key=or_key,
-                base_url="https://openrouter.ai/api/v1"
+                base_url="https://openrouter.ai/api/v1",
+                timeout=30.0,
+                max_retries=1,
             )
             kwargs = dict(
-                model="google/gemma-4-26b-a4b-it:free",
+                model=os.getenv("OPENROUTER_MODEL", "openrouter/free"),
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens
@@ -223,19 +318,29 @@ def _call_ai(messages, model=None, response_format=None, temperature=0.1, max_to
             if response_format:
                 kwargs["response_format"] = response_format
             response = client.chat.completions.create(**kwargs)
+            _record_provider("openrouter", operation, "ok")
             return response.choices[0].message.content
         except Exception as e:
+            _record_provider("openrouter", operation, "error")
             logging.warning(f"OpenRouter fall\u00f3: {e}. Usando Groq.")
 
-    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    groq_key = os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        raise RuntimeError("No hay un proveedor de IA configurado")
+    client = Groq(api_key=groq_key, timeout=30.0, max_retries=1)
     groq_model = model or "llama-3.1-8b-instant"
     kwargs = dict(model=groq_model, messages=messages, temperature=temperature, max_tokens=max_tokens)
     if response_format:
         kwargs["response_format"] = response_format
-    response = client.chat.completions.create(**kwargs)
-    return response.choices[0].message.content
+    try:
+        response = client.chat.completions.create(**kwargs)
+        _record_provider("groq", operation, "ok")
+        return response.choices[0].message.content
+    except Exception:
+        _record_provider("groq", operation, "error")
+        raise
 
-def analyze_message(user_message, history=None):
+def analyze_message(user_message, history=None, memories=None):
     tz = _get_tz()
     now = datetime.now(tz)
     hist_text = ""
@@ -245,11 +350,15 @@ def analyze_message(user_message, history=None):
             label = "Usuario" if role == "user" else "Osiris"
             lines.append(f"{label}: {content[:200]}")
         hist_text = "\n".join(lines)
+    memory_text = "Sin datos guardados."
+    if memories:
+        memory_text = "\n".join(f"- {key}: {value}" for key, value, _ in memories[:10])
     prompt = SYSTEM_PROMPT.format(
         current_date=now.strftime("%Y-%m-%d"),
         current_time=now.strftime("%H:%M"),
         timezone=str(tz),
-        history=hist_text
+        history=hist_text,
+        memories=memory_text,
     )
 
     content = _call_ai(
@@ -263,7 +372,14 @@ def analyze_message(user_message, history=None):
     )
 
     try:
-        result = json.loads(content)
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        if not cleaned.startswith("{"):
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            cleaned = cleaned[start:end + 1] if start >= 0 and end > start else cleaned
+        result = json.loads(cleaned)
         if isinstance(result, dict):
             return result
     except json.JSONDecodeError:
@@ -272,13 +388,75 @@ def analyze_message(user_message, history=None):
     return {"action": "chat", "message": "No entend\u00ed bien. \u00bfPuedes repetirlo?"}
 
 def answer_question(question, search_query):
+    cache_key = "public-search:" + hashlib.sha256(
+        f"{question.strip().lower()}|{search_query.strip().lower()}".encode("utf-8")
+    ).hexdigest()
+    try:
+        cached = get_cached_response(cache_key)
+    except Exception:
+        logging.exception("No se pudo consultar la cache de IA")
+        cached = None
+    if cached:
+        return cached
     context = search_raw(search_query)
     prompt = ANSWER_PROMPT.format(question=question, context=context or "No se encontraron resultados.")
-    return _call_ai(
+    answer = _call_ai(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
-        max_tokens=600
+        max_tokens=600,
+        operation="public_search",
     )
+    try:
+        cache_response(cache_key, answer, ttl_minutes=60)
+    except Exception:
+        logging.exception("No se pudo guardar la respuesta en cache")
+    return answer
+
+
+def answer_from_documents(question, chunks):
+    context = "\n\n".join(
+        f"[{title}, fragmento {index + 1}]\n{content}"
+        for title, index, content in chunks
+    )
+    prompt = (
+        "Responde solo con la informacion de los documentos proporcionados. "
+        "Si la respuesta no aparece, dilo claramente. Menciona el titulo y el "
+        "numero de fragmento que respalda cada dato importante.\n\n"
+        f"Pregunta: {question}\n\nDocumentos:\n{context[:12000]}"
+    )
+    return _call_ai(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+        max_tokens=700,
+    )
+
+
+def summarize_content(content, style="breve"):
+    prompt = (
+        f"Resume el contenido en espanol con estilo {style}. "
+        "Separa decisiones, datos importantes y tareas cuando existan. "
+        "No inventes informacion.\n\n"
+        f"Contenido:\n{content[:16000]}"
+    )
+    return _call_ai(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+        max_tokens=800,
+    )
+
+
+def compose_text(instructions, tone="natural"):
+    prompt = (
+        f"Redacta un mensaje en espanol con tono {tone}. Entrega solo el texto final, "
+        "sin explicaciones y sin inventar datos.\n\n"
+        f"Instrucciones: {instructions[:6000]}"
+    )
+    return _call_ai(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.4,
+        max_tokens=700,
+    )
+
 
 def analyze_image(image_path, prompt="Describe esta imagen en detalle:"):
     import base64
@@ -321,10 +499,12 @@ revisá este historial de actualizaciones y resumíselo en español tico relajad
 
 {history}
 
+Memoria personal:
+{memories}
+
 Mensaje del jefe: {message}"""
 
-def generate_chat_response(user_message, history=None):
-    tz = _get_tz()
+def generate_chat_response(user_message, history=None, memories=None):
     hist_text = ""
     if history:
         lines = ["\nHistorial reciente:"]
@@ -332,10 +512,14 @@ def generate_chat_response(user_message, history=None):
             label = "Usuario" if role == "user" else "Osiris"
             lines.append(f"{label}: {content[:300]}")
         hist_text = "\n".join(lines)
+    memory_text = "Sin datos guardados."
+    if memories:
+        memory_text = "\n".join(f"- {key}: {value}" for key, value, _ in memories[:10])
     prompt = CHAT_SYSTEM_PROMPT.format(
         user="jefe",
         updates=UPDATES,
         history=hist_text,
+        memories=memory_text,
         message=user_message
     )
     return _call_ai(
@@ -345,7 +529,7 @@ def generate_chat_response(user_message, history=None):
     )
 
 def transcribe_audio(file_path):
-    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    client = Groq(api_key=os.getenv("GROQ_API_KEY"), timeout=45.0, max_retries=1)
     with open(file_path, "rb") as f:
         transcription = client.audio.transcriptions.create(
             file=(os.path.basename(file_path), f.read()),

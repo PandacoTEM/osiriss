@@ -717,6 +717,24 @@ def _handle_updates_query(user_message, history):
 
     return None
 
+def _is_research_question(message):
+    msg_lower = message.strip().lower()
+    triggers = [
+        "quién es", "quien es", "qué es", "que es", "qué son", "que son",
+        "dónde está", "donde esta", "dónde queda", "donde queda",
+        "cuándo fue", "cuando fue", "cuándo es", "cuando es",
+        "cómo funciona", "como funciona", "cómo se", "como se",
+        "qué significa", "que significa", "qué pasó", "que paso",
+        "cuál es", "cual es", "cuáles son", "cuales son",
+        "historia de", "quién fue", "quien fue",
+        "qué sabes de", "que sabes de", "dime sobre", "dime de",
+        "investiga", "busca", "averigua",
+    ]
+    for t in triggers:
+        if msg_lower.startswith(t) or t in msg_lower[:50]:
+            return True
+    return False
+
 def generate_chat_response(user_message, history=None, memories=None):
     updates_reply = _handle_updates_query(user_message, history)
     if updates_reply:
@@ -732,8 +750,28 @@ def generate_chat_response(user_message, history=None, memories=None):
     memory_text = "Sin datos guardados."
     if memories:
         memory_text = "\n".join(f"- {key}: {value}" for key, value, _ in memories[:10])
+
+    research_context = ""
+    if _is_research_question(user_message):
+        try:
+            from web_search import research_results
+            sources = research_results(user_message, max_results=5)
+            if sources:
+                report = summarize_research(user_message, sources, fast=True, prefer_google=True)
+                if isinstance(report, dict):
+                    parts = [report.get("summary", "")]
+                    points = report.get("key_points", [])
+                    if points:
+                        parts.append("\n".join(f"- {p}" for p in points[:3]))
+                    limitations = report.get("limitations", "")
+                    if limitations:
+                        parts.append(f"Alcance: {limitations}")
+                    research_context = "\n\n[Datos investigados para responder al jefe]:\n" + "\n".join(parts)
+        except Exception:
+            pass
+
     prompt = CHAT_USER_PROMPT.format(
-        history=hist_text,
+        history=hist_text + research_context,
         memories=memory_text,
         message=user_message
     )

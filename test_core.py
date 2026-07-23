@@ -431,7 +431,7 @@ class ConfigurationRegressionTests(unittest.TestCase):
         )
 
         with (
-            patch.dict(os.environ, {"OPENROUTER_API_KEY": "or-test", "GROQ_API_KEY": "groq-test"}),
+            patch.dict(os.environ, {"OPENROUTER_API_KEY": "or-test", "GROQ_API_KEY": "groq-test", "GOOGLE_API_KEY": ""}),
             patch.object(ai_handler, "OpenAI", return_value=openrouter_client),
             patch.object(ai_handler, "Groq", return_value=groq_client),
             patch.object(ai_handler, "_record_provider") as record_provider,

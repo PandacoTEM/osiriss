@@ -342,7 +342,7 @@ def _call_ai(messages, model=None, response_format=None, temperature=0.1, max_to
                 max_retries=0,
             )
             kwargs = dict(
-                model=os.getenv("GOOGLE_MODEL", "gemini-3.1-flash-lite"),
+                model=os.getenv("GOOGLE_MODEL", "gemini-3.5-flash"),
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens

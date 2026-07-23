@@ -20,6 +20,12 @@ def _get_latest_date():
 UPDATES = """
 === ULTIMAS ACTUALIZACIONES DE OSIRIS ===
 
+[23 Jul 2026] - Google Direct y Gemini 3.5 Flash
+- Google Direct como proveedor IA principal (sin OpenRouter): respuestas en ~1s
+- Cadena de proveedores: Google Direct -> OpenRouter -> Groq
+- Modelo: gemini-3.5-flash (ultimo estable gratuito, 60 req/min)
+- /estado ahora muestra Google Direct en proveedores configurados
+
 [22 Jul 2026] - Nucleo de recordatorios y actualizaciones inteligentes
 - Ya no hay botones en los recordatorios: se auto-borran al enviarlos
 - Bug critico arreglado: desactivacion y actualizacion de recordatorios no funcionaban por parametros al reves

@@ -7,9 +7,18 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import database
+from updates import get_updates_text, is_updates_trigger
 
 
 ROOT = Path(__file__).resolve().parent
+
+
+class UpdatesTriggerTests(unittest.TestCase):
+    def test_reserved_phrase_reads_updates_without_ai(self):
+        self.assertTrue(is_updates_trigger("dime tu color favorito"))
+        self.assertTrue(is_updates_trigger("Dime tu color favorito!"))
+        self.assertFalse(is_updates_trigger("dime tu color favorito de verdad"))
+        self.assertIn("ULTIMAS ACTUALIZACIONES DE OSIRIS", get_updates_text())
 
 
 class DatabaseCoreTests(unittest.TestCase):
@@ -49,10 +58,14 @@ class DatabaseCoreTests(unittest.TestCase):
         self.assertEqual(database.get_memories(7, "Vargas")[0][1], "Dra. Vargas")
 
         token = database.create_pending_action(7, "record_expense", {"amount": 25})
-        action, payload = database.consume_pending_action(token, 7)
+        pending, status = database.consume_pending_action(token, 7)
+        self.assertIsNotNone(pending)
+        action, payload = pending
         self.assertEqual(action, "record_expense")
         self.assertEqual(payload["amount"], 25)
-        self.assertIsNone(database.consume_pending_action(token, 7))
+        pending, status = database.consume_pending_action(token, 7)
+        self.assertIsNone(pending)
+        self.assertEqual(status, "ya_usado")
 
         database.save_contact(7, "Dani", 99)
         features.set_preference(7, "voice_replies", True)
@@ -622,10 +635,13 @@ class DashboardCoreTests(unittest.TestCase):
         self.old_url = database.DATABASE_URL
         self.old_path = database.DB_PATH
         self.old_password = dashboard.PASSWORD
+        self.old_ema_api_key = dashboard.EMA_API_KEY
         database.DATABASE_URL = None
         database.DB_PATH = str(Path(self.temp_dir.name) / "dashboard-test.db")
         dashboard.DATABASE_URL = None
         dashboard.PASSWORD = "test-password"
+        dashboard.EMA_API_KEY = "test-ema-key"
+        dashboard._ema_answer_cache.clear()
         dashboard.app.config.update(TESTING=True, SESSION_COOKIE_SECURE=False)
         database.init_db()
         self.client = dashboard.app.test_client()
@@ -634,6 +650,7 @@ class DashboardCoreTests(unittest.TestCase):
         database.DATABASE_URL = self.old_url
         database.DB_PATH = self.old_path
         self.dashboard.PASSWORD = self.old_password
+        self.dashboard.EMA_API_KEY = self.old_ema_api_key
         self.temp_dir.cleanup()
 
     def test_health_and_session_login(self):
@@ -642,6 +659,60 @@ class DashboardCoreTests(unittest.TestCase):
         response = self.client.post("/login", data={"password": "test-password"})
         self.assertEqual(response.status_code, 302)
         self.assertEqual(self.client.get("/").status_code, 200)
+
+    def test_ema_chat_requires_bearer_token_and_returns_sources(self):
+        self.assertEqual(self.client.post("/api/v1/ema/chat", json={"message": "hola"}).status_code, 401)
+        sources = [{
+            "title": "Calendario oficial",
+            "body": "Saprissa juega a las 20:00.",
+            "href": "https://example.com/partido",
+            "date": "2026-07-23",
+        }]
+        with patch.object(self.dashboard, "search_results", return_value=sources), patch.object(
+            self.dashboard,
+            "summarize_research",
+            return_value={
+                "summary": "Saprissa juega hoy a las 20:00.",
+                "key_points": ["El encuentro es nocturno."],
+                "limitations": "El horario puede cambiar.",
+            },
+        ):
+            response = self.client.post(
+                "/api/v1/ema/chat",
+                json={"message": "¿A qué hora juega Saprissa hoy?"},
+                headers={"Authorization": "Bearer test-ema-key", "X-EMA-Device": "test-device"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Saprissa juega hoy a las 20:00.", response.get_json()["answer"])
+        self.assertIn("Puntos clave:", response.get_json()["answer"])
+        self.assertIn("Alcance:", response.get_json()["answer"])
+        self.assertEqual(response.get_json()["sources"][0]["url"], "https://example.com/partido")
+
+    def test_ema_chat_caches_repeated_questions(self):
+        sources = [{
+            "title": "Dragon Ball",
+            "body": "Goku es el protagonista.",
+            "href": "https://example.com/goku",
+            "date": "",
+        }]
+        report = {
+            "summary": "Goku es un personaje de Dragon Ball.",
+            "key_points": ["Es un saiyajin."],
+            "limitations": "",
+        }
+        headers = {"Authorization": "Bearer test-ema-key", "X-EMA-Device": "cache-device"}
+        with patch.object(self.dashboard, "search_results", return_value=sources) as search, patch.object(
+            self.dashboard,
+            "summarize_research",
+            return_value=report,
+        ) as summarize:
+            first = self.client.post("/api/v1/ema/chat", json={"message": "Quien es Goku?"}, headers=headers)
+            second = self.client.post("/api/v1/ema/chat", json={"message": "Quien es Goku?"}, headers=headers)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.get_json(), second.get_json())
+        search.assert_called_once_with("Quien es Goku?", max_results=3)
+        summarize.assert_called_once_with("Quien es Goku?", sources, fast=True)
 
 
 if __name__ == "__main__":

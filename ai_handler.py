@@ -7,7 +7,7 @@ from datetime import datetime
 from openai import OpenAI
 from groq import Groq
 from web_search import search_raw
-from updates import UPDATES
+from updates import UPDATES, LATEST_DATE
 from features import cache_response, get_cached_response, record_provider_usage
 
 SYSTEM_PROMPT = """Eres Osiris, un asistente de recordatorios personal.
@@ -332,6 +332,31 @@ def _compact_messages_for_groq(messages):
 
 
 def _call_ai(messages, model=None, response_format=None, temperature=0.1, max_tokens=500, operation="chat"):
+    google_key = os.getenv("GOOGLE_API_KEY")
+    if google_key:
+        try:
+            client = OpenAI(
+                api_key=google_key,
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                timeout=15.0,
+                max_retries=0,
+            )
+            kwargs = dict(
+                model=os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            if response_format:
+                kwargs["response_format"] = response_format
+            response = client.chat.completions.create(**kwargs)
+            content = _get_response_content(response, "Google")
+            _record_provider("google", operation, "ok")
+            return content
+        except Exception as e:
+            _record_provider("google", operation, "error")
+            logging.warning(f"Google direct fall\u00f3: {e}. Usando OpenRouter.")
+
     or_key = os.getenv("OPENROUTER_API_KEY")
     if or_key:
         try:
@@ -374,6 +399,36 @@ def _call_ai(messages, model=None, response_format=None, temperature=0.1, max_to
     except Exception:
         _record_provider("groq", operation, "error")
         raise
+
+
+def _call_ai_groq_first(messages, response_format=None, temperature=0.1, max_tokens=500, operation="chat"):
+    groq_key = os.getenv("GROQ_API_KEY")
+    if groq_key:
+        try:
+            client = Groq(api_key=groq_key, timeout=20.0, max_retries=1)
+            kwargs = dict(
+                model="llama-3.1-8b-instant",
+                messages=_compact_messages_for_groq(messages),
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            if response_format:
+                kwargs["response_format"] = response_format
+            response = client.chat.completions.create(**kwargs)
+            content = _get_response_content(response, "Groq")
+            _record_provider("groq", operation, "ok")
+            return content
+        except Exception as exc:
+            _record_provider("groq", operation, "error")
+            logging.warning("Groq rapido fallo: %s. Usando el router normal.", exc)
+
+    return _call_ai(
+        messages=messages,
+        response_format=response_format,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        operation=operation,
+    )
 
 def analyze_message(user_message, history=None, memories=None):
     tz = _get_tz()
@@ -484,7 +539,7 @@ def summarize_content(content, style="breve"):
     )
 
 
-def summarize_research(query, results):
+def summarize_research(query, results, fast=False):
     source_text = "\n\n".join(
         f"<FUENTE id=\"{index}\">\n"
         f"Título: {result['title']}\n"
@@ -517,12 +572,13 @@ concretos sobre comentarios acerca del proceso de búsqueda.
 <DATOS_EXTERNOS>
 {source_text}
 </DATOS_EXTERNOS>"""
-    raw = _call_ai(
+    call_provider = _call_ai_groq_first if fast else _call_ai
+    raw = call_provider(
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
         temperature=0.1,
-        max_tokens=900,
-        operation="research_pdf",
+        max_tokens=450 if fast else 900,
+        operation="ema_search" if fast else "research_pdf",
     )
     cleaned = str(raw or "").strip()
     if cleaned.startswith("```"):
@@ -602,9 +658,9 @@ def ocr_image(image_path):
     return analyze_image(image_path, "Extrae TODO el texto visible en esta imagen. Si es una factura, incluye montos, fechas y conceptos. Si es un flyer, incluye el texto completo. Responde SOLO con el texto extraído, sin comentarios adicionales.")
 
 CHAT_SYSTEM_PROMPT = """Eres Osiris, un asistente personal amigable y cercano.
-Respondes a tu {user} al que llamas "jefe" o "maje".
+Respondes a tu {user} y SIEMPRE te diriges a él como "jefe".
 Eres relajado, con humor costarricense, pero siempre útil.
-Usas frases ticas de vez en cuando: "mae", "diay", "pura vida", "tuanis".
+Usas frases ticas de vez en cuando: "diay", "pura vida", "tuanis". NUNCA le digas "mae" al jefe, solo "jefe".
 
 Reglas:
 - Responde de forma natural y conversacional, como un compa experto
@@ -613,11 +669,6 @@ Reglas:
 - NO uses markdown excesivo
 - 3-6 líneas máximo a menos que el jefe pida más detalles
 
-Si el jefe pregunta sobre tus actualizaciones, cambios o qué hay de nuevo,
-revisá este historial de actualizaciones y resumíselo en español tico relajado:
-
-{updates}
-
 {history}
 
 Memoria personal:
@@ -625,7 +676,52 @@ Memoria personal:
 
 Mensaje del jefe: {message}"""
 
+def _extract_section(text, date_label):
+    lines = text.split("\n")
+    result = []
+    found = False
+    for line in lines:
+        if line.startswith(f"[{date_label}]"):
+            found = True
+        if found:
+            if line.startswith("[") and line != lines[0] and found and result:
+                if not line.startswith(f"[{date_label}]"):
+                    break
+            result.append(line)
+    return "\n".join(result).strip() if result else ""
+
+def _handle_updates_query(user_message, history):
+    msg_lower = user_message.lower()
+    update_kw = ["actualizacion", "actualización", "qué hay de nuevo", "que hay de nuevo",
+                 "novedad", "cambio", "cambios", "nuevas funciones", "has recibido",
+                 "última versión", "ultima version", "nuevo", "nuevos", "novedades"]
+    confirm_kw = ["sí", "si", "dale", "ok", "bueno", "claro", "repasa", "cuenta", "dime",
+                  "sí dale", "si dale", "está bien", "esta bien", "adelante", "vamos"]
+
+    from datetime import datetime
+    today = datetime.now(_get_tz()).strftime("%d %b %Y")
+
+    # Paso 1: ¿Es una confirmación tras haber ofrecido repasar?
+    if history and len(history) >= 2:
+        last_role, last_content = history[-1]
+        if last_role == "assistant" and "última actualización" in last_content.lower():
+            if any(kw in msg_lower for kw in confirm_kw):
+                return f"Ahí le van, jefe. Las últimas actualizaciones fueron del {LATEST_DATE}:\n\n{UPDATES}\n\nPura vida!"
+
+    # Paso 2: ¿Es una pregunta nueva sobre actualizaciones?
+    if any(kw in msg_lower for kw in update_kw):
+        if LATEST_DATE == today:
+            section = _extract_section(UPDATES, today)
+            return f"¡Sí jefe, hoy mismo traigo novedades! Acérese:\n\n{section}\n\nPura vida!"
+        return f"Jefe, la última actualización que recibí fue el {LATEST_DATE}. ¿Quiere que se las repase?"
+
+    return None
+
 def generate_chat_response(user_message, history=None, memories=None):
+    updates_reply = _handle_updates_query(user_message, history)
+    if updates_reply:
+        return updates_reply
+
     hist_text = ""
     if history:
         lines = ["\nHistorial reciente:"]
@@ -638,7 +734,6 @@ def generate_chat_response(user_message, history=None, memories=None):
         memory_text = "\n".join(f"- {key}: {value}" for key, value, _ in memories[:10])
     prompt = CHAT_SYSTEM_PROMPT.format(
         user="jefe",
-        updates=UPDATES,
         history=hist_text,
         memories=memory_text,
         message=user_message

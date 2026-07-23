@@ -30,7 +30,7 @@ from google_tools import create_event, create_gmail_draft, list_events, search_y
 from dashboard import run_dashboard
 from learning import record_action, get_insights
 from pdf_generator import generate_expense_report, generate_text_pdf, generate_weekly_report
-from updates import UPDATES
+from updates import UPDATES, get_updates_text, is_updates_trigger
 from backup_tools import collect_backup_data, create_encrypted_backup, decrypt_backup, restore_backup_payload
 from features import (
     add_important_date, add_inbox_item, archive_inbox_item, create_goal, create_habit,
@@ -134,19 +134,6 @@ def replace_reminder_job(job_queue, when, data):
     for existing in job_queue.get_jobs_by_name(str(data["rid"])):
         existing.schedule_removal()
     job_queue.run_once(send_reminder, when=when, data=data, name=str(data["rid"]))
-
-
-def reminder_buttons(reminder_id, recurring=False):
-    if recurring:
-        return InlineKeyboardMarkup([[
-            InlineKeyboardButton("Cancelar serie", callback_data=f"reminder:done:{reminder_id}"),
-        ]])
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Posponer 10 min", callback_data=f"reminder:snooze:{reminder_id}:10"),
-            InlineKeyboardButton("Completar", callback_data=f"reminder:done:{reminder_id}"),
-        ]
-    ])
 
 
 def confirmation_buttons(token, confirm_label="Confirmar"):
@@ -446,6 +433,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         lines.append("- Telegram: no respondio")
     providers = []
+    if os.getenv("GOOGLE_API_KEY"):
+        providers.append("Google Direct")
     if os.getenv("OPENROUTER_API_KEY"):
         providers.append("OpenRouter")
     if os.getenv("GROQ_API_KEY"):
@@ -478,8 +467,7 @@ async def delete_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def updates_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context):
         return
-    latest = UPDATES.split("[17 Jul 2026]", 1)[0].strip()
-    await update.message.reply_text(latest[:3900])
+    await update.message.reply_text(get_updates_text())
 
 
 async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -923,14 +911,13 @@ def schedule_from_db(app):
     now = local_now()
     for row in reminders:
         try:
-            rid, uid, text, dt_str, recurring, search_q, friend_name, end_date, lead_minutes = row
+            rid, uid, text, dt_str, recurring, search_q, friend_name, end_date, lead_minutes, delivery_status, attempts = row
+            attempts = attempts or 0
             dt = parse_local(dt_str)
             alarm_dt = smart_alarm(dt, lead_minutes or 0)
-            current = get_reminder_by_id(rid)
-            delivery_status = current[10] if current else "pending"
-            attempts = current[11] if current and current[11] else 0
             if delivery_status == "failed" and attempts >= MAX_DELIVERY_ATTEMPTS:
-                logging.error("Recordatorio %s requiere intervencion manual", rid)
+                deactivate_by_id(rid)
+                logging.warning("Recordatorio %s desactivado tras %s intentos fallidos", rid, attempts)
                 continue
             if alarm_dt <= now:
                 if not recurring:
@@ -1019,15 +1006,15 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=target_chat_id,
             text=f"{plain_prefix}{data['text']}",
-            reply_markup=reminder_buttons(data["rid"], bool(data.get("recurring"))) if target_chat_id == data["uid"] else None,
         )
         if target_chat_id != data["uid"]:
             await context.bot.send_message(
                 chat_id=data["uid"],
                 text=f"Recordatorio enviado a {data['friend_name']}: {data['text']}",
-                reply_markup=reminder_buttons(data["rid"], bool(data.get("recurring"))),
             )
         mark_delivered(data["rid"])
+        if not data.get("recurring"):
+            deactivate_by_id(data["rid"])
     except Exception as exc:
         attempts = int(data.get("attempts") or 0) + 1
         mark_delivery_attempt(data["rid"], exc, final=attempts >= MAX_DELIVERY_ATTEMPTS)
@@ -1040,7 +1027,8 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
                 data=dict(data, attempts=attempts),
                 name=str(data["rid"]),
             )
-        elif CREATOR_ID:
+            return
+        if CREATOR_ID:
             try:
                 await context.bot.send_message(
                     chat_id=CREATOR_ID,
@@ -1048,6 +1036,7 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 logging.exception("No se pudo notificar el fallo definitivo")
+        deactivate_by_id(data["rid"])
         return
     if data.get("search_query"):
         logging.info(f"Buscando: {data['search_query']}")
@@ -1075,8 +1064,6 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
             next_alarm,
             dict(data, dt_str=next_str, attempts=0),
         )
-    else:
-        deactivate_by_id(data["rid"])
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1121,9 +1108,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     if len(parts) == 3 and parts[0] == "confirm":
-        pending = consume_pending_action(parts[1], user_id)
+        pending, status = consume_pending_action(parts[1], user_id)
         if not pending:
-            await query.edit_message_text("Esta confirmacion expiro o ya fue utilizada.")
+            if status == "expirado":
+                await query.edit_message_text("El tiempo de confirmacion expiro. Intenta de nuevo.")
+            elif status == "ya_usado":
+                await query.edit_message_text("Esta confirmacion ya fue utilizada o el recordatorio ya no existe.")
+            else:
+                await query.edit_message_text("Esta confirmacion expiro o ya fue utilizada.")
             return
         if parts[2] != "yes":
             await query.edit_message_text("Accion cancelada.")
@@ -2377,6 +2369,11 @@ async def process_action(update, context, text, result, user_id, history=None, m
 
 async def process_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     user_id = update.effective_user.id
+    if is_updates_trigger(text):
+        message = get_updates_text()
+        await update.message.reply_text(message)
+        save_exchange(user_id, text, message, "actualizaciones")
+        return
     private_mode = bool(get_preference(user_id, "private_mode", False))
     history = [] if private_mode else get_recent_history(user_id, limit=6)
     memories = get_memories(user_id, limit=10)

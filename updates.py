@@ -1,67 +1,61 @@
+import re
+
+UPDATES_TRIGGER = "dime tu color favorito"
+
+
+def is_updates_trigger(text):
+    normalized = re.sub(r"[^\w\s]", "", str(text or "").casefold())
+    normalized = " ".join(normalized.split())
+    return normalized == UPDATES_TRIGGER
+
+
+def get_updates_text(max_chars=3900):
+    return UPDATES.strip()[:max_chars]
+
+
+def _get_latest_date():
+    match = re.search(r"\[(\d{2} \w{3} \d{4})\]", UPDATES)
+    return match.group(1) if match else "desconocida"
+
 UPDATES = """
 === ULTIMAS ACTUALIZACIONES DE OSIRIS ===
 
-[18 Jul 2026] - Nucleo confiable y memoria personal
-- Recordatorios recuperados despues de reinicios, estados de entrega y reintentos
-- Botones para posponer, completar y cancelar series
-- Eliminaciones y gastos OCR con confirmacion
-- Memoria estructurada, contactos de Telegram, exportacion y borrado de datos
-- Google OAuth con callback HTTPS y acceso exclusivo del creador
-- openrouter/free como IA principal, Groq como respaldo
-- AudD solo se usa cuando se solicita identificar una cancion
+[22 Jul 2026] - Nucleo de recordatorios y actualizaciones inteligentes
+- Ya no hay botones en los recordatorios: se auto-borran al enviarlos
+- Bug critico arreglado: desactivacion y actualizacion de recordatorios no funcionaban por parametros al reves
+- Bug critico arreglado: columnas faltantes en base de datos impedian programar cualquier recordatorio
+- Recordatorios fallidos permanentes ahora se desactivan solos y notifican al creador
+- Indices en base de datos para consultas mas rapidas
+- Modo WAL activado en SQLite para evitar bloqueos por concurrencia
+- Eliminada consulta N+1 en el ciclo de programacion de recordatorios
+- get_reminder_by_id ahora devuelve todos los campos de delivery
+- Actualizaciones inteligentes: al preguntar "que hay de nuevo" Osiris revisa la fecha de la ultima actualizacion — si es hoy lista los cambios, si es anterior ofrece repasarlos
 
 [18 Jul 2026] - Osiris asistente personal completo
-- Bandeja de entrada, modo privado, memoria temporal y deshacer acciones
-- Rutinas, habitos, metas, fechas importantes y plan diario configurable
-- Resumen matutino por hora, resumen nocturno y reporte semanal PDF
-- Biblioteca de PDF, DOCX, TXT, Markdown, CSV, imagenes y audios
-- Consulta con referencias a fragmentos de documentos personales
-- Presupuestos, suscripciones, duplicados, productos OCR y CSV para Excel
-- Respuestas de voz, resumenes largos, borradores y borradores de Gmail
-- Listas compartidas, compromisos con confirmacion y minutas de reunion
-- Sugerencias proactivas sin ejecutar acciones automaticamente
-- Router OpenRouter/Groq con metricas y cache solo para busquedas publicas
-- Respaldos cifrados restaurables, desconexion de Google y /estado
-- Autodiagnostico periodico de base de datos y programador de recordatorios
+- Recordatorios, bandeja de entrada, modo privado, memoria temporal y deshacer
+- Rutinas, habitos, metas, fechas importantes y plan diario
+- Resumen matutino, nocturno y reporte semanal PDF
+- Biblioteca de documentos: PDF, DOCX, TXT, CSV, imagenes y audios
+- Presupuestos, suscripciones, OCR, gastos CSV
+- Compromisos con confirmacion, minutas de reunion, listas compartidas
+- Google Calendar, Drive, YouTube, Gmail
+- Router OpenRouter/Groq con cache y metricas
+- Respaldos cifrados, desconexion de Google, /estado
 
-[17 Jul 2026] - Sistema de aprendizaje
-- Osiris ahora aprende de tus patrones de uso
-- Detecta recordatorios importantes, gastos frecuentes, temas de búsqueda
-- Puedes preguntar: "qué has aprendido de mí?" o "dame tus insights"
+[17 Jul 2026] - Sistema de aprendizaje y PDF
+- Aprende de tus patrones de uso: recordatorios, gastos, busquedas
+- "dame un pdf de mis gastos" o "genera un pdf sobre cualquier tema"
 
-[17 Jul 2026] - Generador de PDF
-- "dame un pdf de mis gastos" → reporte de gastos en PDF
-- "dame un pdf con un resumen de la segunda guerra mundial" → investiga y genera PDF
-- Categorías, totales, desglose detallado
+[16 Jul 2026] - Chat natural y zona horaria
+- Tono tico relajado, temperatura mas alta, respuestas menos roboticas
+- Recordatorios y resumen nocturno en hora local (America/Costa_Rica)
+- Despliegue en Render 24/7 con UptimeRobot
 
-[17 Jul 2026] - Webhook seguro con secret token
-- Agregado TELEGRAM_WEBHOOK_SECRET para verificar que las peticiones webhook vienen de Telegram y no de terceros
-
-[16 Jul 2026] - Chat natural mejorado
-- Ahora respondo con tono tico relajado (mae, diay, pura vida)
-- Temperatura más alta para respuestas menos robóticas
-- Si no entiendo algo, te pregunto en vez de buguearme
-
-[16 Jul 2026] - Corrección de zona horaria
-- Recordatorios diarios ahora respetan tu hora local (America/Costa_Rica)
-- Resumen nocturno ahora llega a las 9pm, no a las 3pm
-
-[16 Jul 2026] - Despliegue en Render 24/7
-- El bot ahora vive en la nube, no depende de tu PC
-- UptimeRobot lo mantiene despierto con pings cada 5 minutos
-
-[15 Jul 2026] - Fallback OpenRouter → Groq
-- Si OpenRouter falla, uso Groq automáticamente
-- Más estable, menos downtime
-
-[14 Jul 2026] - Nueva acción "clarify"
-- Cuando no entiendo algo, te pido que seas más específico
-- Ej: "Jefe, no entendí bien. ¿Querés un recordatorio o es para una lista?"
-
-[13 Jul 2026] - Funciones iniciales
-- Recordatorios, temporizadores, búsqueda web, YouTube, Google Drive
-- Control de gastos, listas de tareas, OCR en imágenes
-- Reconocimiento de música con Audd
-- Recordatorios para amigos
-- Múltiples acciones en un solo mensaje
+[15-13 Jul 2026] - Funciones iniciales
+- Recordatorios, temporizadores, busqueda web, YouTube, Drive
+- Control de gastos, listas, OCR, identificacion de musica
+- Recordatorios para amigos, multiples acciones por mensaje
+- Fallback OpenRouter → Groq, accion clarify
 """
+
+LATEST_DATE = _get_latest_date()

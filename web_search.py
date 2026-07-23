@@ -30,7 +30,7 @@ _AUTHORITATIVE_DOMAINS = (
 _LOW_VALUE_DOMAINS = ("youtube.com", "youtu.be", "tiktok.com", "facebook.com", "instagram.com")
 _VIDEO_TERMS = ("video", "videos", "highlights", "mejores momentos")
 _ACCESSORY_TERMS = ("camiseta", "camisetas", "equipación", "uniforme", "entradas", "merchandising")
-_SPORTS_TERMS = ("mundial", "copa", "torneo", "campeonato", "liga", "partido")
+_SPORTS_TERMS = ("mundial", "copa", "torneo", "campeonato", "liga", "partido", "juega", "jugar")
 
 
 def _local_date():

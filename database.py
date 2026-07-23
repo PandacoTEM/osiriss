@@ -21,7 +21,10 @@ def get_conn():
         import psycopg2
         return psycopg2.connect(DATABASE_URL, connect_timeout=5)
     import sqlite3
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
 
 def _last_id(c):
     if DATABASE_URL:
@@ -174,6 +177,8 @@ def init_db():
             "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS updated_at TEXT",
         ):
             c.execute(statement)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_reminders_active_datetime ON reminders(active, datetime)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_reminders_user_active_datetime ON reminders(user_id, active, datetime)")
     else:
         c.execute("CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, text TEXT NOT NULL, datetime TEXT NOT NULL, recurring TEXT, search_query TEXT, created_at TEXT NOT NULL, active INTEGER DEFAULT 1)")
         for col in [
@@ -189,8 +194,9 @@ def init_db():
         ]:
             try:
                 c.execute(f"ALTER TABLE reminders ADD COLUMN {col}")
-            except Exception:
-                pass
+            except Exception as exc:
+                if "duplicate" not in str(exc).lower():
+                    print(f"[db] Error adding column {col}: {exc}")
         c.execute("CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, amount REAL NOT NULL, description TEXT, category TEXT, currency TEXT DEFAULT 'CRC', created_at TEXT NOT NULL)")
         c.execute("CREATE TABLE IF NOT EXISTS activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, action TEXT NOT NULL, details TEXT, timestamp TEXT NOT NULL)")
         c.execute("CREATE TABLE IF NOT EXISTS chat_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, timestamp TEXT NOT NULL)")
@@ -203,6 +209,8 @@ def init_db():
         c.execute("CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, memory_key TEXT NOT NULL, memory_value TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(user_id, memory_key))")
         c.execute("CREATE TABLE IF NOT EXISTS pending_actions (token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, action_type TEXT NOT NULL, payload TEXT NOT NULL, expires_at TEXT NOT NULL)")
         c.execute("CREATE TABLE IF NOT EXISTS contacts (id INTEGER PRIMARY KEY AUTOINCREMENT, owner_user_id INTEGER NOT NULL, name TEXT NOT NULL, telegram_user_id INTEGER NOT NULL, created_at TEXT NOT NULL, UNIQUE(owner_user_id, name))")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_reminders_active_datetime ON reminders(active, datetime)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_reminders_user_active_datetime ON reminders(user_id, active, datetime)")
     conn.commit()
     conn.close()
     from features import init_feature_schema
@@ -226,7 +234,7 @@ def add_reminder(user_id, text, dt, recurring=None, search_query=None, friend_na
 def get_all_active():
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT id, user_id, text, datetime, recurring, search_query, friend_name, end_date, lead_minutes FROM reminders WHERE active = 1 ORDER BY datetime")
+    c.execute("SELECT id, user_id, text, datetime, recurring, search_query, friend_name, end_date, lead_minutes, delivery_status, delivery_attempts FROM reminders WHERE active = 1 ORDER BY datetime")
     rows = c.fetchall()
     conn.close()
     return rows
@@ -252,12 +260,13 @@ def get_reminders(user_id, date_filter=None):
 def deactivate_by_id(reminder_id, user_id=None):
     conn = get_conn()
     c = conn.cursor()
+    now = now_str()
     if user_id is None:
-        c.execute(f"UPDATE reminders SET active = 0, updated_at = {_placeholders(2)} WHERE id = {_placeholders(1)}", (reminder_id, now_str()))
+        c.execute(f"UPDATE reminders SET active = 0, updated_at = {_placeholders(1)} WHERE id = {_placeholders(2)}", (now, reminder_id))
     else:
         c.execute(
-            f"UPDATE reminders SET active = 0, updated_at = {_placeholders(3)} WHERE id = {_placeholders(1)} AND user_id = {_placeholders(2)}",
-            (reminder_id, user_id, now_str()),
+            f"UPDATE reminders SET active = 0, updated_at = {_placeholders(1)} WHERE id = {_placeholders(2)} AND user_id = {_placeholders(3)}",
+            (now, reminder_id, user_id),
         )
     conn.commit()
     conn.close()
@@ -274,9 +283,10 @@ def deactivate_by_text(user_id, text_search):
 def update_datetime(reminder_id, new_dt):
     conn = get_conn()
     c = conn.cursor()
+    now = now_str()
     c.execute(
-        f"UPDATE reminders SET datetime = {_placeholders(1)}, delivery_status = 'pending', delivery_attempts = 0, last_error = NULL, updated_at = {_placeholders(3)} WHERE id = {_placeholders(2)}",
-        (new_dt, reminder_id, now_str()),
+        f"UPDATE reminders SET datetime = {_placeholders(1)}, delivery_status = 'pending', delivery_attempts = 0, last_error = NULL, updated_at = {_placeholders(2)} WHERE id = {_placeholders(3)}",
+        (new_dt, now, reminder_id),
     )
     conn.commit()
     conn.close()
@@ -572,7 +582,7 @@ def redeem_auth_code(code, user_id):
 def get_reminder_by_id(reminder_id, user_id=None):
     conn = get_conn()
     c = conn.cursor()
-    sql = "SELECT id, user_id, text, datetime, recurring, search_query, friend_name, end_date, lead_minutes, active, delivery_status, delivery_attempts FROM reminders WHERE id = " + _placeholders(1)
+    sql = "SELECT id, user_id, text, datetime, recurring, search_query, friend_name, end_date, lead_minutes, active, delivery_status, delivery_attempts, last_error, delivered_at, updated_at FROM reminders WHERE id = " + _placeholders(1)
     params = [reminder_id]
     if user_id is not None:
         sql += " AND user_id = " + _placeholders(2)
@@ -661,17 +671,22 @@ def create_pending_action(user_id, action_type, payload, ttl_minutes=15):
 def consume_pending_action(token, user_id):
     conn = get_conn()
     c = conn.cursor()
+    c.execute("BEGIN IMMEDIATE")
     c.execute(
         f"SELECT action_type, payload, expires_at FROM pending_actions WHERE token = {_placeholders(1)} AND user_id = {_placeholders(2)}",
         (token, user_id),
     )
     row = c.fetchone()
-    c.execute(f"DELETE FROM pending_actions WHERE token = {_placeholders(1)}", (token,))
+    if row and datetime.fromisoformat(row[2]) >= local_now():
+        c.execute(f"DELETE FROM pending_actions WHERE token = {_placeholders(1)}", (token,))
+        conn.commit()
+        conn.close()
+        return (row[0], json.loads(row[1])), None
+    if row:
+        c.execute(f"DELETE FROM pending_actions WHERE token = {_placeholders(1)}", (token,))
     conn.commit()
     conn.close()
-    if not row or datetime.fromisoformat(row[2]) < local_now():
-        return None
-    return row[0], json.loads(row[1])
+    return None, "expirado" if row else "ya_usado"
 
 
 def remember(user_id, key, value, ttl_days=None, sensitive=False):

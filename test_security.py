@@ -57,6 +57,14 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertIn(route, dashboard)
             self.assertIn("check_csrf", function_source("dashboard.py", function_name))
 
+    def test_ema_api_requires_a_configured_bearer_token(self):
+        dashboard = read_source("dashboard.py")
+        endpoint = function_source("dashboard.py", "ema_chat")
+        auth = function_source("dashboard.py", "check_ema_api_auth")
+        self.assertIn('os.getenv("EMA_API_KEY"', dashboard)
+        self.assertIn("check_ema_api_auth", endpoint)
+        self.assertIn("compare_digest", auth)
+
     def test_documentation_source_contains_no_live_credentials(self):
         docs = read_source("generate_docs.py")
         credential_patterns = (

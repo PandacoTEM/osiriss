@@ -1,15 +1,29 @@
 import os
 import hmac
+import logging
 import secrets
+import threading
+from collections import defaultdict, deque
+from time import monotonic
 from dotenv import load_dotenv
 from flask import Flask, request, render_template_string, redirect, session
 
 load_dotenv()
 
 from database import init_db, deactivate_by_id, get_task_lists, get_list_items, toggle_task_item, delete_task_item, get_conn, DATABASE_URL
+from ai_handler import summarize_research
+from web_search import search_results
 
 app = Flask(__name__)
 PASSWORD = os.getenv("DASHBOARD_PASSWORD")
+EMA_API_KEY = os.getenv("EMA_API_KEY", "")
+EMA_RATE_LIMIT = max(1, int(os.getenv("EMA_RATE_LIMIT_PER_MINUTE", "20")))
+_ema_request_times = defaultdict(deque)
+_ema_rate_lock = threading.Lock()
+_ema_answer_cache = {}
+_ema_cache_lock = threading.Lock()
+EMA_CACHE_TTL_SECONDS = 1800
+EMA_CACHE_MAX_ENTRIES = 100
 app.secret_key = os.getenv("DASHBOARD_SESSION_SECRET") or os.getenv("TELEGRAM_WEBHOOK_SECRET") or secrets.token_bytes(32)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
@@ -223,6 +237,64 @@ def check_csrf():
     provided = request.form.get("csrf_token", "")
     return bool(expected and hmac.compare_digest(expected, provided))
 
+def check_ema_api_auth():
+    header = request.headers.get("Authorization", "")
+    provided = header.removeprefix("Bearer ").strip() if header.startswith("Bearer ") else ""
+    return bool(EMA_API_KEY and provided and hmac.compare_digest(provided, EMA_API_KEY))
+
+def within_ema_rate_limit(client_id):
+    now = monotonic()
+    with _ema_rate_lock:
+        timestamps = _ema_request_times[client_id]
+        while timestamps and now - timestamps[0] >= 60:
+            timestamps.popleft()
+        if len(timestamps) >= EMA_RATE_LIMIT:
+            return False
+        timestamps.append(now)
+        return True
+
+def format_ema_research_answer(report):
+    if isinstance(report, str):
+        return report.strip()[:6000]
+    if not isinstance(report, dict):
+        raise ValueError("Formato de respuesta de IA no soportado")
+
+    summary = str(report.get("summary") or "").strip()
+    points = report.get("key_points") or []
+    limitations = str(report.get("limitations") or "").strip()
+    if not summary:
+        raise ValueError("La respuesta de IA no contiene resumen")
+
+    sections = [summary]
+    if isinstance(points, list):
+        clean_points = [str(point).strip() for point in points if str(point).strip()]
+        if clean_points:
+            sections.append("Puntos clave:\n" + "\n".join(f"- {point}" for point in clean_points[:5]))
+    if limitations:
+        sections.append(f"Alcance: {limitations}")
+    return "\n\n".join(sections)[:6000]
+
+def get_cached_ema_answer(message):
+    key = message.casefold()
+    now = monotonic()
+    with _ema_cache_lock:
+        cached = _ema_answer_cache.get(key)
+        if not cached:
+            return None
+        created_at, payload = cached
+        if now - created_at >= EMA_CACHE_TTL_SECONDS:
+            _ema_answer_cache.pop(key, None)
+            return None
+        return payload
+
+def cache_ema_answer(message, payload):
+    key = message.casefold()
+    with _ema_cache_lock:
+        if len(_ema_answer_cache) >= EMA_CACHE_MAX_ENTRIES:
+            oldest_key = min(_ema_answer_cache, key=lambda item: _ema_answer_cache[item][0])
+            _ema_answer_cache.pop(oldest_key, None)
+        _ema_answer_cache[key] = (monotonic(), payload)
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if not PASSWORD:
@@ -257,6 +329,50 @@ def health():
         return {"status": "ok", "database": "ok"}, 200
     except Exception:
         return {"status": "degraded", "database": "error"}, 503
+
+@app.route("/api/v1/ema/chat", methods=["POST"])
+def ema_chat():
+    if not check_ema_api_auth():
+        return {"error": "unauthorized"}, 401
+    client_id = request.headers.get("X-EMA-Device", request.remote_addr or "unknown")[:100]
+    if not within_ema_rate_limit(client_id):
+        return {"error": "rate_limit"}, 429
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return {"error": "invalid_json"}, 400
+    message = " ".join(str(payload.get("message") or "").split())
+    if not message or len(message) > 500:
+        return {"error": "invalid_message"}, 400
+
+    try:
+        cached = get_cached_ema_answer(message)
+        if cached:
+            return cached, 200
+
+        sources = search_results(message, max_results=3)
+        if not sources:
+            return {
+                "answer": "No encontré fuentes suficientes para responder con confianza.",
+                "sources": [],
+            }, 200
+        answer = format_ema_research_answer(summarize_research(message, sources, fast=True))
+        response_payload = {
+            "answer": answer,
+            "sources": [
+                {
+                    "title": source["title"][:200],
+                    "url": source["href"],
+                    "date": source.get("date") or None,
+                }
+                for source in sources
+            ],
+        }
+        cache_ema_answer(message, response_payload)
+        return response_payload, 200
+    except Exception:
+        logging.exception("Error procesando consulta de EMA")
+        return {"error": "provider_unavailable"}, 503
 
 @app.route("/")
 def index():

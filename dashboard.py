@@ -356,7 +356,9 @@ def ema_chat():
                 "answer": "No encontré fuentes suficientes para responder con confianza.",
                 "sources": [],
             }, 200
-        answer = format_ema_research_answer(summarize_research(message, sources, fast=True))
+        answer = format_ema_research_answer(
+            summarize_research(message, sources, fast=True, prefer_google=True)
+        )
         response_payload = {
             "answer": answer,
             "sources": [

@@ -712,7 +712,12 @@ class DashboardCoreTests(unittest.TestCase):
         self.assertEqual(second.status_code, 200)
         self.assertEqual(first.get_json(), second.get_json())
         search.assert_called_once_with("Quien es Goku?", max_results=3)
-        summarize.assert_called_once_with("Quien es Goku?", sources, fast=True)
+        summarize.assert_called_once_with(
+            "Quien es Goku?",
+            sources,
+            fast=True,
+            prefer_google=True,
+        )
 
 
 if __name__ == "__main__":

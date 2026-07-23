@@ -539,7 +539,7 @@ def summarize_content(content, style="breve"):
     )
 
 
-def summarize_research(query, results, fast=False):
+def summarize_research(query, results, fast=False, prefer_google=False):
     source_text = "\n\n".join(
         f"<FUENTE id=\"{index}\">\n"
         f"Título: {result['title']}\n"
@@ -572,7 +572,7 @@ concretos sobre comentarios acerca del proceso de búsqueda.
 <DATOS_EXTERNOS>
 {source_text}
 </DATOS_EXTERNOS>"""
-    call_provider = _call_ai_groq_first if fast else _call_ai
+    call_provider = _call_ai if prefer_google or not fast else _call_ai_groq_first
     raw = call_provider(
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
@@ -657,7 +657,7 @@ def analyze_image(image_path, prompt="Describe esta imagen en detalle:"):
 def ocr_image(image_path):
     return analyze_image(image_path, "Extrae TODO el texto visible en esta imagen. Si es una factura, incluye montos, fechas y conceptos. Si es un flyer, incluye el texto completo. Responde SOLO con el texto extraído, sin comentarios adicionales.")
 
-CHAT_SYSTEM_PROMPT = """Eres Osiris, un asistente personal amigable y cercano.
+CHAT_SYSTEM_INSTRUCTIONS = """Eres Osiris, un asistente personal amigable y cercano.
 Respondes a tu {user} y SIEMPRE te diriges a él como "jefe".
 Eres relajado, con humor costarricense, pero siempre útil.
 Usas frases ticas de vez en cuando: "diay", "pura vida", "tuanis". NUNCA le digas "mae" al jefe, solo "jefe".
@@ -667,9 +667,9 @@ Reglas:
 - Menciona el historial reciente si es relevante
 - Siempre cierra cualquier *negritas* que abras
 - NO uses markdown excesivo
-- 3-6 líneas máximo a menos que el jefe pida más detalles
+- 3-6 líneas máximo a menos que el jefe pida más detalles"""
 
-{history}
+CHAT_USER_PROMPT = """{history}
 
 Memoria personal:
 {memories}
@@ -732,14 +732,14 @@ def generate_chat_response(user_message, history=None, memories=None):
     memory_text = "Sin datos guardados."
     if memories:
         memory_text = "\n".join(f"- {key}: {value}" for key, value, _ in memories[:10])
-    prompt = CHAT_SYSTEM_PROMPT.format(
-        user="jefe",
+    prompt = CHAT_USER_PROMPT.format(
         history=hist_text,
         memories=memory_text,
         message=user_message
     )
+    system = CHAT_SYSTEM_INSTRUCTIONS.format(user="jefe")
     return _call_ai(
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         temperature=0.7,
         max_tokens=500
     )

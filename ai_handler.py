@@ -649,13 +649,125 @@ def analyze_image(image_path, prompt="Describe esta imagen en detalle:"):
                 ]
             }
         ],
-        model="qwen/qwen3.6-27b",
         temperature=0.3,
+        max_tokens=800
+    )
+
+
+def analyze_image_with_context(image_path, prompt, history=None, memories=None):
+    """Analiza imagen con contexto de conversación y memoria, responde como Osiris."""
+    import base64
+    with open(image_path, "rb") as f:
+        image_data = base64.b64encode(f.read()).decode("utf-8")
+    
+    hist_text = ""
+    if history:
+        lines = ["\nHistorial reciente:"]
+        for role, content in history[-4:]:
+            label = "Usuario" if role == "user" else "Osiris"
+            lines.append(f"{label}: {content[:300]}")
+        hist_text = "\n".join(lines)
+    
+    mem_text = "Sin datos guardados."
+    if memories:
+        mem_text = "\n".join(f"- {k}: {v}" for k, v, _ in memories[:8])
+    
+    system = CHAT_SYSTEM_INSTRUCTIONS.format(user="jefe")
+    user_content = f"""{hist_text}
+
+Memoria personal:
+{mem_text}
+
+El jefe mandó una imagen y dice: {prompt}
+
+Responde como Osiris: natural, tico, llamándolo "jefe", 3-6 líneas máximo."""
+    
+    return _call_ai(
+        messages=[
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_content},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+                ]
+            }
+        ],
+        temperature=0.7,
         max_tokens=500
     )
 
+
+def analyze_image_structured(image_path, schema_prompt):
+    """Analiza imagen y devuelve JSON estructurado según schema_prompt."""
+    import base64
+    with open(image_path, "rb") as f:
+        image_data = base64.b64encode(f.read()).decode("utf-8")
+    return _call_ai(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": schema_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+                ]
+            }
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.1,
+        max_tokens=1000
+    )
+
+
 def ocr_image(image_path):
     return analyze_image(image_path, "Extrae TODO el texto visible en esta imagen. Si es una factura, incluye montos, fechas y conceptos. Si es un flyer, incluye el texto completo. Responde SOLO con el texto extraído, sin comentarios adicionales.")
+
+
+INVOICE_ANALYSIS_PROMPT = """Eres un analizador de facturas y tickets. Extrae la información de forma estructurada.
+
+Devuelve SOLO un JSON válido con este esquema:
+{
+  "merchant": "nombre del comercio/establecimiento",
+  "date": "YYYY-MM-DD o null",
+  "total": 12345.67,
+  "currency": "CRC|USD|EUR",
+  "items": [
+    {"description": "nombre producto", "quantity": 1, "unit_price": 1000.00, "total_price": 1000.00}
+  ],
+  "tax": 1300.00,
+  "subtotal": 10000.00,
+  "payment_method": "efectivo|tarjeta|transferencia|null",
+  "category_suggestion": "comida|transporte|compras|servicios|salud|otros",
+  "confidence": 0.95
+}
+
+Si no detectas factura/ticket, devuelve: {"is_invoice": false}"""
+
+SCENE_ANALYSIS_PROMPT = """Analiza esta imagen y describe lo que ves de forma estructurada.
+
+Devuelve SOLO un JSON válido:
+{
+  "scene_type": "interior|exterior|documento|pantalla|persona|objeto|paisaje|otro",
+  "main_objects": ["objeto1", "objeto2", "objeto3"],
+  "people_count": 0,
+  "text_present": true,
+  "text_summary": "resumen breve del texto visible si hay",
+  "colors_dominant": ["azul", "blanco", "gris"],
+  "setting_description": "descripción en 1-2 frases del entorno/escena",
+  "notable_details": "detalles relevantes (marcas, logos, estado, etc.)",
+  "confidence": 0.9
+}"""
+
+OBJECT_IDENTIFICATION_PROMPT = """Identifica los objetos principales en esta imagen.
+
+Devuelve SOLO un JSON válido:
+{
+  "objects": [
+    {"name": "nombre objeto", "confidence": 0.95, "category": "electronico|mueble|vehiculo|comida|ropa|herramienta|otro", "attributes": {"color": "negro", "marca": "Apple", "estado": "nuevo"}}
+  ],
+  "scene_context": "dónde/para qué se usa esto",
+  "text_detected": "texto legible si hay, si no null"
+}"""
 
 CHAT_SYSTEM_INSTRUCTIONS = """Eres Osiris, un asistente personal amigable y cercano.
 Respondes a tu {user} y SIEMPRE te diriges a él como "jefe".
@@ -781,6 +893,41 @@ def generate_chat_response(user_message, history=None, memories=None):
         temperature=0.7,
         max_tokens=500
     )
+
+
+def analyze_image_with_context(image_path, user_prompt=None, history=None, memories=None):
+    """Analiza una imagen con la personalidad de Osiris y contexto conversacional."""
+    import base64
+    with open(image_path, "rb") as f:
+        image_data = base64.b64encode(f.read()).decode("utf-8")
+
+    # Build context like generate_chat_response
+    hist_text = ""
+    if history:
+        lines = ["\nHistorial reciente:"]
+        for role, content in history[-4:]:
+            label = "Usuario" if role == "user" else "Osiris"
+            lines.append(f"{label}: {content[:300]}")
+        hist_text = "\n".join(lines)
+    memory_text = "Sin datos guardados."
+    if memories:
+        memory_text = "\n".join(f"- {key}: {value}" for key, value, _ in memories[:10])
+
+    prompt = user_prompt or "Describe qué ves en esta imagen con detalle."
+
+    # Build the multimodal message
+    system = CHAT_SYSTEM_INSTRUCTIONS.format(user="jefe")
+    user_content = [
+        {"type": "text", "text": f"{CHAT_USER_PROMPT.format(history=hist_text, memories=memory_text, message=prompt)}"},
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+    ]
+
+    return _call_ai(
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user_content}],
+        temperature=0.4,
+        max_tokens=600
+    )
+
 
 def transcribe_audio(file_path):
     client = Groq(api_key=os.getenv("GROQ_API_KEY"), timeout=45.0, max_retries=1)

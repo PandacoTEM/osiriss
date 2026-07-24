@@ -22,7 +22,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters, ContextTypes
 
 from database import init_db, add_reminder, get_all_active, get_reminders, deactivate_by_id, update_datetime, log_activity, get_today_activity, save_message, get_recent_history, create_task_list, add_task_item, get_task_lists, get_list_items, toggle_task_item, delete_task_list, delete_task_item, search_lists, is_task_list_owner, add_expense, get_today_expenses, authorize_user, deauthorize_user, is_authorized, get_authorized_user_ids, create_auth_code, redeem_auth_code, get_reminder_by_id, search_active_reminders, mark_delivery_attempt, mark_delivered, snooze_reminder, update_reminder_details, create_pending_action, consume_pending_action, remember, get_memories, forget_memory, save_contact, get_contact, get_contacts, delete_contact, delete_user_data, get_conn, DATABASE_URL
-from ai_handler import analyze_message, transcribe_audio, answer_question, answer_from_documents, compose_text, summarize_content, summarize_research, analyze_image, ocr_image, generate_chat_response
+from ai_handler import analyze_message, transcribe_audio, answer_question, answer_from_documents, compose_text, summarize_content, summarize_research, analyze_image, ocr_image, generate_chat_response, analyze_image_with_context, analyze_image_structured, INVOICE_ANALYSIS_PROMPT
 from web_search import research_results
 from music_recognizer import recognize as recognize_music
 from auth import complete_auth, get_auth_url, is_authenticated, revoke_google_access
@@ -2569,10 +2569,66 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await msg.edit_text(f"Texto extraido:\n\n{text}")
         else:
-            prompt = caption or "Describe esta imagen en detalle."
-            desc = await asyncio.to_thread(analyze_image, file_path, prompt)
-            log_activity(user_id, "vision_imagen", desc[:100])
-            await msg.edit_text(f"Lo que veo:\n\n{desc}")
+            # Fetch history and memories for contextual vision response
+            history = await asyncio.to_thread(get_recent_history, user_id, 5)
+            memories = await asyncio.to_thread(get_memories, user_id)
+            
+            # Use caption as prompt, or default
+            prompt = caption or "Describe qué ves en esta imagen con detalle."
+            
+            # First, check if it's an invoice/ticket for auto-expense detection
+            invoice_data = None
+            try:
+                invoice_raw = await asyncio.to_thread(
+                    analyze_image_structured,
+                    file_path,
+                    INVOICE_ANALYSIS_PROMPT
+                )
+                import json
+                invoice_data = json.loads(invoice_raw)
+            except Exception:
+                pass
+            
+            if invoice_data and invoice_data.get("is_invoice") is not False and invoice_data.get("total"):
+                # It's an invoice! Offer to save as expense with structured data
+                total = invoice_data.get("total", 0)
+                currency = invoice_data.get("currency", "CRC")
+                merchant = invoice_data.get("merchant", "desconocido")
+                category = invoice_data.get("category_suggestion", "otros")
+                items = invoice_data.get("items", [])
+                date_str = invoice_data.get("date")
+                
+                token = create_pending_action(
+                    user_id,
+                    "record_expense",
+                    {
+                        "amount": total,
+                        "currency": currency,
+                        "description": f"{merchant} - factura",
+                        "category": category,
+                        "items": items,
+                    },
+                )
+                await msg.edit_text(
+                    f"🧾 *Factura detectada:* {merchant}\n"
+                    f"Total: {total:,.2f} {currency}\n"
+                    f"Categoría sugerida: {category}\n"
+                    f"Items: {len(items)}\n\n"
+                    f"¿La guardo como gasto, jefe?",
+                    reply_markup=confirmation_buttons(token, "Registrar gasto"),
+                    parse_mode="Markdown"
+                )
+            else:
+                # Regular vision response with Osiris personality
+                desc = await asyncio.to_thread(
+                    analyze_image_with_context,
+                    file_path,
+                    prompt,
+                    history,
+                    memories
+                )
+                log_activity(user_id, "vision_imagen", desc[:100])
+                await msg.edit_text(desc)
     except Exception as e:
         await msg.edit_text("No pude procesar la imagen en este momento.")
         logging.exception("Photo error: %s", e)
